@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Materials\Pages;
 
+use App\Filament\Actions\CatalogActions;
 use App\Filament\Resources\Materials\MaterialResource;
 use Filament\Actions\CreateAction;
 use Filament\Resources\Pages\ListRecords;
@@ -13,6 +14,7 @@ class ListMaterials extends ListRecords
     protected function getHeaderActions(): array
     {
         return [
+            ...CatalogActions::make(),
             CreateAction::make(),
         ];
     }

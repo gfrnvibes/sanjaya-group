@@ -10,20 +10,11 @@ use App\Models\ProductVariant;
 use App\Models\SalesImportBatch;
 use App\Models\SkuAlias;
 use App\Models\Store;
-use DateTimeImmutable;
-use DateTimeInterface;
+use App\Support\Spreadsheet;
 use Illuminate\Database\QueryException;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
-use OpenSpout\Reader\CSV\Options as CsvOptions;
-use OpenSpout\Reader\CSV\Reader as CsvReader;
-use OpenSpout\Reader\ODS\Options as OdsOptions;
-use OpenSpout\Reader\ODS\Reader as OdsReader;
-use OpenSpout\Reader\ReaderInterface;
-use OpenSpout\Reader\XLSX\Options as XlsxOptions;
-use OpenSpout\Reader\XLSX\Reader as XlsxReader;
 use Throwable;
 
 /**
@@ -33,8 +24,6 @@ use Throwable;
  */
 class SalesOrderImporter
 {
-    private const HEADER_SCAN_ROWS = 15;
-
     /** @var Collection<string, Store>|null */
     private ?Collection $stores = null;
 
@@ -60,7 +49,7 @@ class SalesOrderImporter
         ]);
 
         try {
-            [$rows, $errors] = $this->parse($path, pathinfo($fileName, PATHINFO_EXTENSION));
+            [$rows, $errors] = $this->parse($path, $fileName);
         } catch (BusinessRuleException $exception) {
             [$rows, $errors] = [[], [$exception->getMessage()]];
         }
@@ -136,70 +125,12 @@ class SalesOrderImporter
     /**
      * @return array{0: list<array<string, mixed>>, 1: list<string>}
      */
-    private function parse(string $path, string $extension): array
+    private function parse(string $path, string $fileName): array
     {
-        $reader = $this->reader($path, strtolower($extension));
-        $reader->open($path);
-
         $rows = [];
         $errors = [];
-        $columns = null;
 
-        try {
-            foreach ($reader->getSheetIterator() as $sheet) {
-                $line = 0;
-
-                foreach ($sheet->getRowIterator() as $row) {
-                    $line++;
-                    $values = $row->toArray();
-
-                    if ($columns === null) {
-                        $columns = $this->detectHeader($values);
-
-                        if ($columns === null && $line >= self::HEADER_SCAN_ROWS) {
-                            break;
-                        }
-
-                        continue;
-                    }
-
-                    $input = [];
-                    foreach ($columns as $key => $index) {
-                        $value = $values[$index] ?? null;
-                        $input[$key] = is_string($value) ? trim($value) : $value;
-                    }
-
-                    if (collect($input)->every(fn ($value): bool => $value === null || $value === '')) {
-                        continue;
-                    }
-
-                    $parsed = $this->parseRow($input, $line, $errors);
-
-                    if ($parsed !== null) {
-                        $rows[] = $parsed;
-                    }
-                }
-
-                break; // hanya sheet pertama
-            }
-        } finally {
-            $reader->close();
-        }
-
-        if ($columns === null) {
-            throw new BusinessRuleException('Header tidak ditemukan. Pastikan ada kolom TANGGAL, NAMA TOKO, SKU VARIAN / SKU BIG SELLER, dan QTY (gunakan template).');
-        }
-
-        return [$rows, $errors];
-    }
-
-    /**
-     * @param  list<mixed>  $values
-     * @return array<string, int>|null kunci input => indeks kolom
-     */
-    private function detectHeader(array $values): ?array
-    {
-        $map = [
+        $lines = Spreadsheet::read($path, $fileName, [
             'TANGGAL' => 'order_date',
             'NAMA TOKO' => 'store',
             'SKU VARIAN' => 'sku',
@@ -207,21 +138,18 @@ class SalesOrderImporter
             'SKU BIGSELLER' => 'sku_bigseller',
             'QTY' => 'qty',
             'PENDAPATAN TOKO' => 'revenue',
-        ];
+        ], ['order_date', 'store', 'qty', ['sku', 'sku_bigseller']],
+            'Header tidak ditemukan. Pastikan ada kolom TANGGAL, NAMA TOKO, SKU VARIAN / SKU BIG SELLER, dan QTY (gunakan template).');
 
-        $columns = [];
+        foreach ($lines as $line) {
+            $parsed = $this->parseRow($line['values'], $line['line'], $errors);
 
-        foreach ($values as $index => $value) {
-            $label = Str::of((string) (is_scalar($value) ? $value : ''))->upper()->squish()->toString();
-
-            if (isset($map[$label]) && ! isset($columns[$map[$label]])) {
-                $columns[$map[$label]] = $index;
+            if ($parsed !== null) {
+                $rows[] = $parsed;
             }
         }
 
-        $hasSku = isset($columns['sku']) || isset($columns['sku_bigseller']);
-
-        return isset($columns['order_date'], $columns['store'], $columns['qty']) && $hasSku ? $columns : null;
+        return [$rows, $errors];
     }
 
     /**
@@ -233,7 +161,7 @@ class SalesOrderImporter
     {
         $rowErrors = [];
 
-        $date = $this->parseDate($input['order_date'] ?? null);
+        $date = Spreadsheet::parseDate($input['order_date'] ?? null);
         if ($date === null) {
             $rowErrors[] = 'TANGGAL kosong atau formatnya tidak dikenali';
         }
@@ -259,13 +187,13 @@ class SalesOrderImporter
             $rowErrors[] = "SKU \"{$variant->sku}\" tidak aktif";
         }
 
-        $qty = $this->parseNumber($input['qty'] ?? null);
+        $qty = Spreadsheet::parseNumber($input['qty'] ?? null);
         if ($qty === null || $qty < 1 || floor($qty) != $qty) {
             $rowErrors[] = 'QTY harus bilangan bulat minimal 1';
         }
 
         $revenueRaw = $input['revenue'] ?? null;
-        $revenue = $this->parseNumber($revenueRaw);
+        $revenue = Spreadsheet::parseNumber($revenueRaw);
         if ($revenueRaw !== null && $revenueRaw !== '' && ($revenue === null || $revenue < 0)) {
             $rowErrors[] = 'PENDAPATAN TOKO harus angka >= 0';
         }
@@ -302,96 +230,6 @@ class SalesOrderImporter
         return $variantId !== null
             ? $this->variants()->firstWhere('id', $variantId)
             : $this->variants()->get(Str::lower($skuBigSeller));
-    }
-
-    private function parseDate(mixed $value): ?string
-    {
-        if ($value instanceof DateTimeInterface) {
-            return Carbon::instance($value)->toDateString();
-        }
-
-        if (is_int($value) || is_float($value)) {
-            // Nomor seri tanggal Excel.
-            return $value > 0 ? Carbon::create(1899, 12, 30)->addDays((int) $value)->toDateString() : null;
-        }
-
-        $value = trim((string) $value);
-
-        if ($value === '') {
-            return null;
-        }
-
-        foreach (['Y-m-d', 'Y/m/d', 'd/m/Y', 'd-m-Y', 'd.m.Y', 'Y-m-d H:i:s', 'd/m/Y H:i'] as $format) {
-            $date = DateTimeImmutable::createFromFormat('!'.$format, $value);
-
-            if ($date !== false && $date->format($format) === $value) {
-                return $date->format('Y-m-d');
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * Angka dari sel Excel atau teks seperti "Rp 52.492" / "52,492.50".
-     */
-    private function parseNumber(mixed $value): ?float
-    {
-        if (is_int($value) || is_float($value)) {
-            return (float) $value;
-        }
-
-        $value = preg_replace('/[^\d.,\-]/', '', (string) $value);
-
-        if ($value === '' || $value === '-') {
-            return null;
-        }
-
-        $hasDot = str_contains($value, '.');
-        $hasComma = str_contains($value, ',');
-
-        if ($hasDot && $hasComma) {
-            // Pemisah desimal = yang muncul paling akhir.
-            $value = strrpos($value, ',') > strrpos($value, '.')
-                ? str_replace(['.', ','], ['', '.'], $value)
-                : str_replace(',', '', $value);
-        } elseif ($hasDot && preg_match('/^-?\d{1,3}(\.\d{3})+$/', $value)) {
-            $value = str_replace('.', '', $value);
-        } elseif ($hasComma) {
-            $value = preg_match('/^-?\d{1,3}(,\d{3})+$/', $value) ? str_replace(',', '', $value) : str_replace(',', '.', $value);
-        }
-
-        return is_numeric($value) ? (float) $value : null;
-    }
-
-    /**
-     * Baris kosong dipertahankan agar nomor baris di pesan error sama dengan nomor baris di Excel.
-     */
-    private function reader(string $path, string $extension): ReaderInterface
-    {
-        switch ($extension) {
-            case 'xlsx':
-                $options = new XlsxOptions;
-                $options->SHOULD_PRESERVE_EMPTY_ROWS = true;
-
-                return new XlsxReader($options);
-            case 'ods':
-                $options = new OdsOptions;
-                $options->SHOULD_PRESERVE_EMPTY_ROWS = true;
-
-                return new OdsReader($options);
-            case 'csv':
-            case 'txt':
-                $options = new CsvOptions;
-                $options->SHOULD_PRESERVE_EMPTY_ROWS = true;
-                $firstLine = (string) fgets($handle = fopen($path, 'r'));
-                fclose($handle);
-                $options->FIELD_DELIMITER = substr_count($firstLine, ';') > substr_count($firstLine, ',') ? ';' : ',';
-
-                return new CsvReader($options);
-            default:
-                throw new BusinessRuleException('Format file tidak didukung. Gunakan .xlsx, .csv, atau .ods.');
-        }
     }
 
     /** @return Collection<string, Store> */
