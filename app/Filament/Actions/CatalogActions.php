@@ -112,6 +112,17 @@ class CatalogActions
                     ? collect(['Tidak ada data yang berubah.'])
                     : $summary->map(fn (string $line): string => e($line));
 
+                $warnings = collect($result['warnings']);
+
+                if ($warnings->isNotEmpty()) {
+                    $body->push('', '<b>Dibuat otomatis, perlu dicek ('.$warnings->count().'):</b>');
+                    $body->push(...$warnings->take(15)->map(fn (string $warning): string => e($warning))->all());
+
+                    if ($warnings->count() > 15) {
+                        $body->push('… dan '.($warnings->count() - 15).' lainnya.');
+                    }
+                }
+
                 $errors = collect($result['errors']);
 
                 if ($errors->isNotEmpty()) {
@@ -132,6 +143,7 @@ class CatalogActions
                     ->body($body->implode('<br>'));
 
                 match (true) {
+                    $errors->isEmpty() && $warnings->isNotEmpty() => $notification->success()->persistent(),
                     $errors->isEmpty() => $notification->success(),
                     $summary->isNotEmpty() => $notification->warning()->persistent(),
                     default => $notification->danger()->persistent(),

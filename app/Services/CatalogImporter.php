@@ -149,26 +149,33 @@ class CatalogImporter
     /** @var list<string> */
     private array $errors = [];
 
+    /** @var list<string> data bantu yang dibuat dengan nilai tebakan/default — perlu dicek */
+    private array $warnings = [];
+
+    /** @var list<string> peringatan baris yang sedang diproses */
+    private array $pendingWarnings = [];
+
     public function __construct(private InventoryService $inventory) {}
 
     /**
-     * @return array{rows: int, sheets: list<string>, stats: array<string, array{created: int, updated: int, skipped: int}>, errors: list<string>}
+     * @return array{rows: int, sheets: list<string>, stats: array<string, array{created: int, updated: int, skipped: int}>, errors: list<string>, warnings: list<string>}
      */
     public function import(string $path, string $fileName): array
     {
         $this->stats = [];
         $this->errors = [];
+        $this->warnings = [];
 
         try {
             $sheets = Spreadsheet::readSheets($path, $fileName, collect(self::SHEETS)
                 ->map(fn (array $sheet): array => ['headers' => $sheet['headers'], 'required' => $sheet['required']])
                 ->all());
         } catch (BusinessRuleException $exception) {
-            return ['rows' => 0, 'sheets' => [], 'stats' => [], 'errors' => [$exception->getMessage()]];
+            return ['rows' => 0, 'sheets' => [], 'stats' => [], 'errors' => [$exception->getMessage()], 'warnings' => []];
         }
 
         if ($sheets === []) {
-            return ['rows' => 0, 'sheets' => [], 'stats' => [], 'errors' => ['Tidak ada sheet yang dikenali. Gunakan template katalog (sheet Bahan / Produk / Resep BOM / Pembelian Bahan).']];
+            return ['rows' => 0, 'sheets' => [], 'stats' => [], 'errors' => ['Tidak ada sheet yang dikenali. Gunakan template katalog (sheet Bahan / Produk / Resep BOM / Pembelian Bahan).'], 'warnings' => []];
         }
 
         foreach ($sheets['materials'] ?? [] as $row) {
@@ -197,6 +204,7 @@ class CatalogImporter
             'sheets' => collect(array_keys($sheets))->map(fn (string $key): string => self::SHEETS[$key]['title'])->all(),
             'stats' => $this->stats,
             'errors' => $this->errors,
+            'warnings' => array_values(array_unique($this->warnings)),
         ];
     }
 
@@ -224,7 +232,8 @@ class CatalogImporter
         $v->throwIfInvalid();
 
         $warehouse = $openingQty !== null ? $this->warehouse($v->text('warehouse')) : null;
-        $type = $this->materialType($v->text('type_code'), $v->text('type_name'), $kind);
+        $uom = isset($attributes['base_uom']) ? BaseUom::from($attributes['base_uom']) : null;
+        $type = $this->materialType($v->text('type_code'), $v->text('type_name'), $kind, $uom);
         $color = $this->color($v->text('color_code'), $v->text('color_name'));
 
         $code = $v->text('code');
@@ -233,20 +242,7 @@ class CatalogImporter
             : Material::query()->where('material_type_id', $type->id)->where('color_id', $color?->id)->first();
 
         if ($material === null) {
-            foreach (['base_uom' => 'SATUAN DASAR', 'qty_per_pack' => 'ISI PER SATUAN BELI'] as $key => $label) {
-                if (! isset($attributes[$key])) {
-                    throw new BusinessRuleException("{$label} wajib diisi untuk bahan baru.");
-                }
-            }
-
-            $material = Material::create([
-                'material_type_id' => $type->id,
-                'color_id' => $color?->id,
-                'code' => $code !== '' ? $code : Str::upper($type->code.($color ? ' - '.$color->name : '')),
-                'pack_uom' => 'roll',
-                ...$attributes,
-            ]);
-            $this->bump('Bahan', 'created');
+            $material = $this->createMaterial($type, $color, $code !== '' ? $code : null, $attributes);
         } else {
             $material->fill(['material_type_id' => $type->id, ...$attributes]);
             if ($color !== null) {
@@ -299,11 +295,8 @@ class CatalogImporter
         $v->throwIfInvalid();
 
         $category = $v->text('category') !== '' ? $this->category($v->text('category')) : null;
-        $model = $this->findCi(ProductModel::withTrashed(), 'code', $modelCode);
-
-        if ($model?->trashed()) {
-            throw new BusinessRuleException("model {$modelCode} sudah dihapus.");
-        }
+        $color = $this->color($v->text('color_code'), $v->text('color_name'));
+        $size = $v->text('size') !== '' ? $this->size($v->text('size')) : null;
 
         $modelAttributes = array_filter([
             'name' => $v->text('model_name') ?: null,
@@ -312,20 +305,22 @@ class CatalogImporter
             'default_margin_pct' => $modelMargin,
         ], fn ($value): bool => $value !== null);
 
-        if ($model === null) {
-            if (! isset($modelAttributes['name'], $modelAttributes['category_id'])) {
-                throw new BusinessRuleException("model {$modelCode} belum terdaftar, NAMA MODEL dan KATEGORI wajib diisi.");
-            }
+        $model = $this->findCi(ProductModel::withTrashed(), 'code', $modelCode);
 
-            $model = ProductModel::create(['code' => $modelCode, ...$modelAttributes]);
-            $this->bump('Model', 'created');
+        if ($model?->trashed()) {
+            throw new BusinessRuleException("model {$modelCode} sudah dihapus.");
+        }
+
+        if ($model === null) {
+            $model = $this->createModel($modelCode, [
+                ...$modelAttributes,
+                'name' => $modelAttributes['name'] ?? $this->modelNameFromVariant($v->text('name'), $color, $size),
+            ]);
         } else {
             $model->fill($modelAttributes);
             $this->saveIfDirty($model, 'Model');
         }
 
-        $color = $this->color($v->text('color_code'), $v->text('color_name'));
-        $size = $v->text('size') !== '' ? $this->size($v->text('size')) : null;
         $variant = $this->findCi(ProductVariant::withTrashed(), 'sku', $sku);
 
         if ($variant?->trashed()) {
@@ -419,8 +414,13 @@ class CatalogImporter
         $effectiveFrom = $first->date('effective_from', 'BERLAKU MULAI', required: true);
         $first->throwIfInvalid();
 
-        $model = $this->findCi(ProductModel::query(), 'code', $modelCode)
-            ?? throw new BusinessRuleException("model {$modelCode} tidak ditemukan.");
+        $model = $this->findCi(ProductModel::withTrashed(), 'code', $modelCode)
+            ?? $this->createModel($modelCode, []);
+
+        if ($model->trashed()) {
+            throw new BusinessRuleException("model {$modelCode} sudah dihapus.");
+        }
+
         $size = $first->text('size') !== '' ? $this->size($first->text('size')) : null;
 
         $lines = [];
@@ -447,13 +447,11 @@ class CatalogImporter
                     $v->requireText(['type_code' => 'KODE JENIS BAHAN']);
                     $v->throwIfInvalid();
 
-                    $materialType = $this->findCi(MaterialType::query(), 'code', $v->text('type_code'))
-                        ?? throw new BusinessRuleException("jenis bahan {$v->text('type_code')} tidak ditemukan");
+                    $materialType = $this->materialType($v->text('type_code'), '', null, null);
                     $material = null;
 
                     if ($v->text('material_code') !== '') {
-                        $material = $this->findCi(Material::query(), 'code', $v->text('material_code'))
-                            ?? throw new BusinessRuleException("bahan {$v->text('material_code')} tidak ditemukan");
+                        $material = $this->materialByCode($v->text('material_code'), $materialType);
 
                         if ($material->material_type_id !== $materialType->id) {
                             throw new BusinessRuleException("bahan {$material->code} bukan jenis {$materialType->code}");
@@ -565,9 +563,9 @@ class CatalogImporter
             $total = $v->number('total_price', 'TOTAL HARGA', min: 0, required: true);
 
             try {
+                $v->requireText(['material_code' => 'KODE BAHAN']);
                 $v->throwIfInvalid();
-                $material = $this->findCi(Material::query(), 'code', $v->text('material_code'))
-                    ?? throw new BusinessRuleException("bahan {$v->text('material_code')} tidak ditemukan");
+                $material = $this->materialByCode($v->text('material_code'));
 
                 $items[] = [
                     'material_id' => $material->id,
@@ -644,7 +642,10 @@ class CatalogImporter
         return $variant->costs()->whereDate('effective_from', '<=', $date)->orderByDesc('effective_from')->first();
     }
 
-    private function materialType(string $code, string $name, ?MaterialKind $kind): MaterialType
+    /**
+     * Jenis bahan; bila belum ada dibuat. Kategori kosong ditebak dari satuan (pcs/gr = aksesoris, lainnya kain).
+     */
+    private function materialType(string $code, string $name, ?MaterialKind $kind, ?BaseUom $uom): MaterialType
     {
         if ($code === '') {
             throw new BusinessRuleException('KODE JENIS BAHAN kosong.');
@@ -655,7 +656,8 @@ class CatalogImporter
         }
 
         if ($kind === null) {
-            throw new BusinessRuleException("jenis bahan {$code} belum terdaftar, KATEGORI BAHAN (kain/aksesoris) wajib diisi.");
+            $kind = in_array($uom, [BaseUom::Pcs, BaseUom::Gr], true) ? MaterialKind::Aksesoris : MaterialKind::Kain;
+            $this->warn("jenis bahan {$code} dibuat dengan kategori {$kind->getLabel()} (tebakan".($uom ? " dari satuan {$uom->value}" : '').').');
         }
 
         $this->bump('Jenis Bahan', 'created');
@@ -663,26 +665,155 @@ class CatalogImporter
         return MaterialType::create(['code' => Str::upper(Str::limit($code, 30, '')), 'name' => Str::limit($name ?: $code, 80, ''), 'kind' => $kind]);
     }
 
+    /**
+     * Warna; bila belum ada dibuat. Kode kosong dibuat dari nama ("Biru Muda" => BIRUMUDA).
+     * Nama didahulukan (unik & bermakna) agar hasil sama di setiap impor ulang.
+     */
     private function color(string $code, string $name): ?Color
     {
         if ($code === '' && $name === '') {
             return null;
         }
 
-        $color = ($code !== '' ? $this->findCi(Color::query(), 'code', $code) : null)
-            ?? ($name !== '' ? $this->findCi(Color::query(), 'name', $name) : null);
+        $color = ($name !== '' ? $this->findCi(Color::query(), 'name', $name) : null)
+            ?? ($code !== '' ? $this->findCi(Color::query(), 'code', $code) : null);
 
         if ($color !== null) {
             return $color;
         }
 
-        if ($code === '') {
-            throw new BusinessRuleException("warna \"{$name}\" belum terdaftar, KODE WARNA wajib diisi.");
-        }
-
         $this->bump('Warna', 'created');
 
-        return Color::create(['code' => Str::upper(Str::limit($code, 10, '')), 'name' => Str::limit($name ?: $code, 60, '')]);
+        return Color::create([
+            'code' => $code !== '' ? Str::upper(Str::limit($code, 10, '')) : $this->uniqueCode(Color::class, $name, 10, ''),
+            'name' => Str::limit($name ?: $code, 60, ''),
+        ]);
+    }
+
+    /**
+     * Model baru. Nama kosong = kode; kategori kosong = "Umum".
+     *
+     * @param  array<string, mixed>  $attributes
+     */
+    private function createModel(string $code, array $attributes): ProductModel
+    {
+        $defaults = [];
+
+        if (blank($attributes['name'] ?? null)) {
+            $attributes['name'] = $code;
+            $defaults[] = "nama \"{$code}\"";
+        }
+
+        if (blank($attributes['category_id'] ?? null)) {
+            $attributes['category_id'] = $this->category('Umum')->id;
+            $defaults[] = 'kategori Umum';
+        }
+
+        if ($defaults !== []) {
+            $this->warn("model {$code} dibuat otomatis dengan ".implode(' dan ', $defaults).'.');
+        }
+
+        $this->bump('Model', 'created');
+
+        return ProductModel::create(['code' => $code, ...$attributes]);
+    }
+
+    /**
+     * Nama model dari NAMA VARIAN tanpa ukuran & warna di belakangnya ("Baju Chef 01 Hitam S" => "Baju Chef 01").
+     */
+    private function modelNameFromVariant(string $variantName, ?Color $color, ?Size $size): ?string
+    {
+        $name = trim($variantName);
+
+        foreach ([$size?->code, $color?->name] as $part) {
+            if ($part && Str::endsWith(Str::lower($name), ' '.Str::lower($part))) {
+                $name = trim(Str::substr($name, 0, Str::length($name) - Str::length($part) - 1));
+            }
+        }
+
+        return $name !== '' ? Str::limit($name, 150, '') : null;
+    }
+
+    /**
+     * Bahan baru. Satuan kosong ditebak dari kategori jenis bahan (kain = cm/roll, aksesoris = pcs), isi per satuan beli = 1.
+     *
+     * @param  array<string, mixed>  $attributes
+     */
+    private function createMaterial(MaterialType $type, ?Color $color, ?string $code, array $attributes): Material
+    {
+        $code ??= Str::upper($type->code.($color ? ' - '.$color->name : ''));
+        $isFabric = $type->kind === MaterialKind::Kain;
+        $defaults = [];
+
+        if (! isset($attributes['base_uom'])) {
+            $attributes['base_uom'] = $isFabric ? BaseUom::Cm->value : BaseUom::Pcs->value;
+            $defaults[] = "satuan {$attributes['base_uom']}";
+        }
+
+        if (! isset($attributes['qty_per_pack'])) {
+            $attributes['qty_per_pack'] = 1;
+            $defaults[] = 'isi per satuan beli 1';
+        }
+
+        if ($defaults !== []) {
+            $this->warn("bahan {$code} dibuat dengan ".implode(', ', $defaults).' — cek satuan karena memengaruhi stok & HPP.');
+        }
+
+        $this->bump('Bahan', 'created');
+
+        return Material::create([
+            'material_type_id' => $type->id,
+            'color_id' => $color?->id,
+            'code' => Str::limit($code, 60, ''),
+            'pack_uom' => $isFabric ? 'roll' : 'pcs',
+            ...$attributes,
+        ]);
+    }
+
+    /**
+     * Bahan dari kode (sheet Resep/Pembelian). Bila belum ada dibuat: jenis & warna dari kode "JENIS - WARNA".
+     */
+    private function materialByCode(string $code, ?MaterialType $type = null): Material
+    {
+        if ($material = $this->findCi(Material::query(), 'code', $code)) {
+            return $material;
+        }
+
+        [$typeCode, $colorName] = array_map('trim', explode(' - ', $code, 2) + [1 => '']);
+        $type ??= $this->materialType($typeCode, '', null, null);
+        $color = $colorName !== '' ? $this->color('', $colorName) : null;
+
+        $existing = Material::query()->where('material_type_id', $type->id)->where('color_id', $color?->id)->first();
+
+        if ($existing !== null) {
+            $this->warn("kode bahan \"{$code}\" dianggap sama dengan bahan {$existing->code} (jenis & warna sama).");
+
+            return $existing;
+        }
+
+        return $this->createMaterial($type, $color, $code, []);
+    }
+
+    /**
+     * Kode unik dari teks bebas untuk tabel bantu.
+     *
+     * @param  class-string<Model>  $model
+     */
+    private function uniqueCode(string $model, string $text, int $max, string $separator = '-'): string
+    {
+        $base = Str::upper(Str::slug($text, $separator)) ?: 'X';
+        $candidate = Str::limit($base, $max, '');
+
+        for ($i = 2; $this->findCi($model::query(), 'code', $candidate) !== null; $i++) {
+            $candidate = Str::limit($base, $max - strlen((string) $i), '').$i;
+        }
+
+        return $candidate;
+    }
+
+    private function warn(string $message): void
+    {
+        $this->pendingWarnings[] = $message;
     }
 
     private function size(string $code): Size
@@ -718,17 +849,32 @@ class CatalogImporter
         return LaborType::create(['code' => Str::upper(Str::limit($code, 20, '')), 'name' => Str::limit($name ?: $code, 60, '')]);
     }
 
+    /**
+     * Gudang dari kode/nama; bila belum ada dibuat. Kosong = gudang default (dibuat "Gudang Utama" bila belum ada gudang sama sekali).
+     */
     private function warehouse(string $value): Warehouse
     {
         if ($value === '') {
-            return Warehouse::query()->find(Setting::valueOf('default_warehouse_id'))
-                ?? Warehouse::query()->first()
-                ?? throw new BusinessRuleException('belum ada gudang; buat gudang dulu di menu Stok > Gudang.');
+            $warehouse = Warehouse::query()->find(Setting::valueOf('default_warehouse_id')) ?? Warehouse::query()->first();
+
+            if ($warehouse !== null) {
+                return $warehouse;
+            }
+
+            $value = 'Gudang Utama';
         }
 
-        return $this->findCi(Warehouse::query(), 'code', $value)
-            ?? $this->findCi(Warehouse::query(), 'name', $value)
-            ?? throw new BusinessRuleException("gudang \"{$value}\" tidak ditemukan.");
+        $warehouse = $this->findCi(Warehouse::query(), 'code', $value) ?? $this->findCi(Warehouse::query(), 'name', $value);
+
+        if ($warehouse !== null) {
+            return $warehouse;
+        }
+
+        $warehouse = Warehouse::create(['code' => $this->uniqueCode(Warehouse::class, $value, 20), 'name' => Str::limit($value, 80, '')]);
+        $this->warn("gudang \"{$warehouse->name}\" dibuat otomatis (kode {$warehouse->code}).");
+        $this->bump('Gudang', 'created');
+
+        return $warehouse;
     }
 
     /**
@@ -762,6 +908,7 @@ class CatalogImporter
     private function attempt(string $where, callable $callback): void
     {
         $this->pending = [];
+        $this->pendingWarnings = [];
 
         try {
             DB::transaction($callback);
@@ -773,6 +920,10 @@ class CatalogImporter
                     $this->stats[$label][$kind] += $count;
                 }
             }
+
+            foreach ($this->pendingWarnings as $warning) {
+                $this->warnings[] = "{$where}: {$warning}";
+            }
         } catch (BusinessRuleException $exception) {
             $this->errors[] = "{$where}: ".rtrim($exception->getMessage(), '.').'.';
         } catch (QueryException $exception) {
@@ -783,6 +934,7 @@ class CatalogImporter
         }
 
         $this->pending = [];
+        $this->pendingWarnings = [];
     }
 
     /**
