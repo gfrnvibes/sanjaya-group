@@ -16,8 +16,9 @@ class SpreadsheetRow
 
     /**
      * @param  array<string, mixed>  $values
+     * @param  int  $line  nomor baris di file (untuk pesan error)
      */
-    public function __construct(private array $values) {}
+    public function __construct(private array $values, public readonly int $line = 0) {}
 
     public function text(string $key): string
     {

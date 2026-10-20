@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\MaterialPurchases\Pages;
 
+use App\Filament\Actions\CatalogActions;
 use App\Filament\Resources\MaterialPurchases\MaterialPurchaseResource;
 use Filament\Actions\CreateAction;
 use Filament\Resources\Pages\ListRecords;
@@ -13,6 +14,7 @@ class ListMaterialPurchases extends ListRecords
     protected function getHeaderActions(): array
     {
         return [
+            ...CatalogActions::make(),
             CreateAction::make(),
         ];
     }

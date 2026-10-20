@@ -76,6 +76,7 @@ class SalesOrderSpreadsheet
             ['', ''],
             ['Otomatis', 'Pemilik toko, nama produk, harga reseller, margin, total tagihan dihitung sistem sesuai tanggal pesanan.'],
             ['Catatan', 'Setiap baris menjadi 1 pesanan. Stok berkurang dari gudang yang dipilih saat impor.'],
+            ['', 'Baris valid disimpan, baris error dilaporkan. Baris yang sama persis (tanggal, toko, SKU, qty, pendapatan) dengan pesanan yang sudah ada dilewati, jadi file yang sama aman diimpor ulang.'],
             ['Contoh', '2026-10-01 | Ground Supply Tiktok | TJN | | 1 | 52492'],
         ]);
 

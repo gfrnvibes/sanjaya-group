@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Owners\Pages;
 
+use App\Filament\Actions\StoreActions;
 use App\Filament\Resources\Owners\OwnerResource;
 use Filament\Actions\CreateAction;
 use Filament\Resources\Pages\ListRecords;
@@ -13,6 +14,7 @@ class ListOwners extends ListRecords
     protected function getHeaderActions(): array
     {
         return [
+            ...StoreActions::make(),
             CreateAction::make(),
         ];
     }

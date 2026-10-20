@@ -4,7 +4,9 @@ namespace App\Filament\Resources\MaterialPurchases\Pages;
 
 use App\Exceptions\BusinessRuleException;
 use App\Filament\Resources\MaterialPurchases\MaterialPurchaseResource;
+use App\Filament\Support\PriceSyncNotification;
 use App\Services\InventoryService;
+use App\Services\PricingService;
 use Filament\Notifications\Notification;
 use Filament\Resources\Pages\CreateRecord;
 use Illuminate\Database\Eloquent\Model;
@@ -25,6 +27,19 @@ class CreateMaterialPurchase extends CreateRecord
 
             $this->halt();
         }
+    }
+
+    /**
+     * Harga bahan berubah: HPP & harga reseller varian yang memakai bahan ini dihitung ulang mulai tanggal beli.
+     */
+    protected function afterCreate(): void
+    {
+        $purchase = $this->getRecord();
+
+        PriceSyncNotification::send(app(PricingService::class)->syncForMaterials(
+            $purchase->items()->pluck('material_id'),
+            $purchase->purchase_date,
+        ));
     }
 
     protected function getRedirectUrl(): string

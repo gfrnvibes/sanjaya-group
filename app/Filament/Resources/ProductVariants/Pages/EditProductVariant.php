@@ -3,6 +3,8 @@
 namespace App\Filament\Resources\ProductVariants\Pages;
 
 use App\Filament\Resources\ProductVariants\ProductVariantResource;
+use App\Filament\Support\PriceSyncNotification;
+use App\Services\PricingService;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\ForceDeleteAction;
 use Filament\Actions\RestoreAction;
@@ -21,5 +23,19 @@ class EditProductVariant extends EditRecord
             ForceDeleteAction::make(),
             RestoreAction::make(),
         ];
+    }
+
+    /**
+     * Margin berubah: harga baru berlaku hari ini. Model/warna/ukuran berubah: dihitung dari tanggal resep.
+     */
+    protected function afterSave(): void
+    {
+        $variant = $this->getRecord();
+
+        if ($variant->wasChanged('margin_pct')) {
+            PriceSyncNotification::send(app(PricingService::class)->syncVariants([$variant], today()));
+        } elseif ($variant->wasChanged(['model_id', 'color_id', 'size_id'])) {
+            PriceSyncNotification::send(app(PricingService::class)->syncVariants([$variant]));
+        }
     }
 }

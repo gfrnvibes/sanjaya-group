@@ -67,14 +67,17 @@ class ListSalesOrders extends ListRecords
             ->label('Import Excel')
             ->icon(Heroicon::OutlinedArrowUpTray)
             ->modalHeading('Import Pesanan dari Excel')
-            ->modalDescription('Kolom wajib: TANGGAL, NAMA TOKO, SKU VARIAN / SKU BIG SELLER, QTY, PENDAPATAN TOKO. Harga reseller, margin, dan total tagihan dihitung otomatis. Bila ada baris yang error, tidak ada data yang disimpan.')
+            ->modalDescription('Bisa beberapa file sekaligus (1 file = 1 batch impor). Kolom wajib: TANGGAL, NAMA TOKO, SKU VARIAN / SKU BIG SELLER, QTY, PENDAPATAN TOKO. Harga reseller, margin, dan total tagihan dihitung otomatis. Baris valid disimpan, baris error dilaporkan; baris yang sama persis dengan pesanan yang sudah ada (termasuk dari file lain di unggahan yang sama) dilewati.')
             ->modalSubmitActionLabel('Import')
             ->schema([
-                FileUpload::make('file')
-                    ->label('File (.xlsx, .csv, .ods)')
+                FileUpload::make('files')
+                    ->label('File (.xlsx, .csv, .ods) — boleh lebih dari satu')
+                    ->multiple()
+                    ->maxFiles(20)
+                    ->reorderable()
                     ->disk('local')
                     ->directory('imports/sales-orders')
-                    ->storeFileNamesIn('file_name')
+                    ->storeFileNamesIn('file_names')
                     ->acceptedFileTypes([
                         'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                         'application/vnd.oasis.opendocument.spreadsheet',
@@ -105,44 +108,56 @@ class ListSalesOrders extends ListRecords
             ])
             ->action(function (array $data, SalesOrderImporter $importer): void {
                 $disk = Storage::disk('local');
+                $paths = array_values((array) $data['files']);
+                $names = (array) ($data['file_names'] ?? []);
 
                 try {
-                    $result = $importer->import($disk->path($data['file']), $data['file_name'] ?? basename($data['file']), [
-                        'warehouse_id' => (int) $data['warehouse_id'],
-                        'status' => $data['status'],
-                        'source' => $data['source'] instanceof SalesImportSource ? $data['source']->value : $data['source'],
-                    ]);
+                    $result = $importer->importMany(
+                        array_map(fn (string $path): array => ['path' => $disk->path($path), 'name' => $names[$path] ?? basename($path)], $paths),
+                        [
+                            'warehouse_id' => (int) $data['warehouse_id'],
+                            'status' => $data['status'],
+                            'source' => $data['source'] instanceof SalesImportSource ? $data['source']->value : $data['source'],
+                        ],
+                    );
                 } finally {
-                    $disk->delete($data['file']);
+                    $disk->delete($paths);
                 }
 
-                if ($result['errors'] !== []) {
-                    $errors = collect($result['errors']);
-                    $lines = $errors->take(10)->map(fn (string $error): string => e($error));
+                $errors = collect($result['errors']);
+                $lines = collect([e(($result['files'] > 1 ? "{$result['files']} file, " : '')
+                    ."{$result['rows']} baris dibaca: {$result['created']} tersimpan, {$result['skipped']} dilewati (sudah pernah diimpor), {$errors->count()} gagal.")]);
+
+                if ($errors->isNotEmpty()) {
+                    $lines->push('', ...$errors->take(10)->map(fn (string $error): string => e($error))->all());
 
                     if ($errors->count() > 10) {
                         $lines->push('… dan '.($errors->count() - 10).' error lainnya.');
                     }
-
-                    Notification::make()
-                        ->title('Import gagal, tidak ada data yang disimpan')
-                        ->body($lines->implode('<br>'))
-                        ->danger()
-                        ->persistent()
-                        ->send();
-
-                    return;
                 }
 
-                Notification::make()
-                    ->title("{$result['created']} pesanan berhasil diimpor")
-                    ->success()
+                $notification = Notification::make()
+                    ->title(match (true) {
+                        $errors->isEmpty() => "{$result['created']} pesanan berhasil diimpor",
+                        $result['created'] > 0 => "{$result['created']} pesanan tersimpan, {$errors->count()} baris gagal",
+                        default => 'Import gagal, tidak ada pesanan yang tersimpan',
+                    })
+                    ->body($lines->implode('<br>'))
                     ->actions([
                         Action::make('viewBatch')
-                            ->label('Lihat batch impor')
-                            ->url(SalesImportBatchResource::getUrl('view', ['record' => $result['batch']])),
-                    ])
-                    ->send();
+                            ->label(count($result['batches']) > 1 ? 'Lihat riwayat impor' : 'Lihat batch impor')
+                            ->url(count($result['batches']) > 1
+                                ? SalesImportBatchResource::getUrl('index')
+                                : SalesImportBatchResource::getUrl('view', ['record' => $result['batches'][0]])),
+                    ]);
+
+                match (true) {
+                    $errors->isEmpty() => $notification->success(),
+                    $result['created'] > 0 => $notification->warning()->persistent(),
+                    default => $notification->danger()->persistent(),
+                };
+
+                $notification->send();
             });
     }
 }

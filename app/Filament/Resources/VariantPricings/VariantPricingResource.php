@@ -2,15 +2,13 @@
 
 namespace App\Filament\Resources\VariantPricings;
 
-use App\Exceptions\BusinessRuleException;
 use App\Filament\Resources\VariantPricings\Pages\ManageVariantPricings;
+use App\Filament\Support\PriceSyncNotification;
 use App\Models\VariantPricing;
 use App\Services\PricingService;
 use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Actions\BulkAction;
-use Filament\Forms\Components\DatePicker;
-use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\TextColumn;
@@ -88,48 +86,24 @@ class VariantPricingResource extends Resource
                     ->query(fn (Builder $query): Builder => $query->whereNull('hpp')),
             ])
             ->recordActions([
-                Action::make('approve')
-                    ->label('Setujui')
-                    ->icon(Heroicon::OutlinedCheckCircle)
-                    ->color('success')
-                    ->visible(fn (VariantPricing $record): bool => $record->proposed_price !== null)
-                    ->schema([
-                        DatePicker::make('effective_from')
-                            ->label('Berlaku Mulai')
-                            ->default(today()->addDay())
-                            ->required(),
-                    ])
-                    ->action(function (VariantPricing $record, array $data, PricingService $pricing): void {
-                        $pricing->approveProposal($record, $data['effective_from']);
-
-                        Notification::make()->title("Harga {$record->sku} disetujui")->success()->send();
-                    }),
+                Action::make('recalculate')
+                    ->label('Hitung Ulang')
+                    ->icon(Heroicon::OutlinedCalculator)
+                    ->color('gray')
+                    ->requiresConfirmation()
+                    ->modalDescription('Hitung HPP dari resep x harga beli bahan terakhir dan perbarui harga reseller otomatis, berlaku hari ini.')
+                    ->action(fn (VariantPricing $record, PricingService $pricing) => PriceSyncNotification::send(
+                        $pricing->syncVariants([$record->variant], today()),
+                    )),
             ])
             ->toolbarActions([
-                BulkAction::make('approveSelected')
-                    ->label('Setujui Usulan Terpilih')
-                    ->icon(Heroicon::OutlinedCheckCircle)
-                    ->color('success')
-                    ->schema([
-                        DatePicker::make('effective_from')
-                            ->label('Berlaku Mulai')
-                            ->default(today()->addDay())
-                            ->required(),
-                    ])
-                    ->action(function (Collection $records, array $data, PricingService $pricing): void {
-                        $approved = 0;
-
-                        foreach ($records as $record) {
-                            try {
-                                $pricing->approveProposal($record, $data['effective_from']);
-                                $approved++;
-                            } catch (BusinessRuleException) {
-                                //
-                            }
-                        }
-
-                        Notification::make()->title("{$approved} harga disetujui")->success()->send();
-                    })
+                BulkAction::make('recalculateSelected')
+                    ->label('Hitung Ulang Terpilih')
+                    ->icon(Heroicon::OutlinedCalculator)
+                    ->requiresConfirmation()
+                    ->action(fn (Collection $records, PricingService $pricing) => PriceSyncNotification::send(
+                        $pricing->syncVariants($records->load('variant')->pluck('variant')->filter(), today()),
+                    ))
                     ->deselectRecordsAfterCompletion(),
             ]);
     }

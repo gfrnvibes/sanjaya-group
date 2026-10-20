@@ -2,7 +2,9 @@
 
 namespace App\Filament\Resources\StockAdjustments\Pages;
 
+use App\Filament\Actions\ResourceIo;
 use App\Filament\Resources\StockAdjustments\StockAdjustmentResource;
+use App\Imports\StockAdjustmentImport;
 use Filament\Actions\CreateAction;
 use Filament\Resources\Pages\ListRecords;
 
@@ -13,6 +15,7 @@ class ListStockAdjustments extends ListRecords
     protected function getHeaderActions(): array
     {
         return [
+            ...ResourceIo::make(StockAdjustmentImport::class),
             CreateAction::make(),
         ];
     }

@@ -8,6 +8,7 @@ use App\Enums\SalesOrderStatus;
 use App\Exceptions\BusinessRuleException;
 use App\Models\ProductVariant;
 use App\Models\SalesImportBatch;
+use App\Models\SalesOrderItem;
 use App\Models\SkuAlias;
 use App\Models\Store;
 use App\Support\Spreadsheet;
@@ -20,7 +21,9 @@ use Throwable;
 /**
  * Impor sheet "INPUT ORDERAN RESELLER": 1 baris = 1 pesanan.
  * Header dicari otomatis (boleh ada judul di atasnya & kolom otomatis di sampingnya).
- * Semua baris divalidasi dulu; bila ada 1 error, tidak ada yang disimpan.
+ * Tiap baris disimpan terpisah: baris valid tersimpan, baris error dilaporkan.
+ * Baris yang sama persis dengan pesanan yang sudah ada (toko, tanggal, SKU, qty, pendapatan) dilewati agar tidak dobel.
+ * Bisa beberapa file sekaligus (importMany): 1 file = 1 batch impor.
  */
 class SalesOrderImporter
 {
@@ -36,8 +39,36 @@ class SalesOrderImporter
     public function __construct(private SalesOrderService $orders) {}
 
     /**
+     * Impor beberapa file sekaligus. Tiap file = 1 batch impor; file diproses berurutan sehingga baris
+     * yang sama persis dengan file sebelumnya (atau pesanan yang sudah ada) dilewati.
+     *
+     * @param  list<array{path: string, name: string}>  $files
      * @param  array{warehouse_id: int, status: string, source: string}  $options
-     * @return array{batch: SalesImportBatch, created: int, errors: list<string>}
+     * @return array{batches: list<SalesImportBatch>, files: int, rows: int, created: int, skipped: int, errors: list<string>}
+     */
+    public function importMany(array $files, array $options): array
+    {
+        $total = ['batches' => [], 'files' => count($files), 'rows' => 0, 'created' => 0, 'skipped' => 0, 'errors' => []];
+
+        foreach ($files as $file) {
+            $result = $this->import($file['path'], $file['name'], $options);
+
+            $total['batches'][] = $result['batch'];
+            $total['rows'] += $result['rows'];
+            $total['created'] += $result['created'];
+            $total['skipped'] += $result['skipped'];
+
+            foreach ($result['errors'] as $error) {
+                $total['errors'][] = count($files) > 1 ? "{$file['name']} — {$error}" : $error;
+            }
+        }
+
+        return $total;
+    }
+
+    /**
+     * @param  array{warehouse_id: int, status: string, source: string}  $options
+     * @return array{batch: SalesImportBatch, rows: int, created: int, skipped: int, errors: list<string>}
      */
     public function import(string $path, string $fileName, array $options): array
     {
@@ -49,81 +80,114 @@ class SalesOrderImporter
         ]);
 
         try {
-            [$rows, $errors] = $this->parse($path, $fileName);
+            [$rows, $errors, $lineCount] = $this->parse($path, $fileName);
         } catch (BusinessRuleException $exception) {
-            [$rows, $errors] = [[], [$exception->getMessage()]];
+            [$rows, $errors, $lineCount] = [[], [$exception->getMessage()], 0];
         }
 
-        $created = 0;
-
-        if ($errors === [] && $rows !== []) {
-            $created = $this->store($rows, $batch, $options, $errors);
-        } elseif ($errors === []) {
+        if ($lineCount === 0 && $errors === []) {
             $errors[] = 'Tidak ada baris data yang bisa diimpor.';
         }
 
+        [$created, $skipped] = $this->store($rows, $batch, $options, $errors);
+
         $batch->update([
-            'status' => $errors === [] ? ImportBatchStatus::Done : ImportBatchStatus::Failed,
-            'row_count' => count($rows),
+            'status' => $created === 0 && $errors !== [] ? ImportBatchStatus::Failed : ImportBatchStatus::Done,
+            'row_count' => $lineCount,
             'error_count' => count($errors),
         ]);
 
-        return ['batch' => $batch, 'created' => $created, 'errors' => $errors];
+        return ['batch' => $batch, 'rows' => $lineCount, 'created' => $created, 'skipped' => $skipped, 'errors' => $errors];
     }
 
     /**
+     * Simpan tiap baris dalam transaksinya sendiri: baris valid tersimpan, baris error dilaporkan.
+     * Baris yang sama persis dengan pesanan yang sudah ada (toko, tanggal, SKU, qty, pendapatan) dilewati.
+     *
      * @param  list<array{line: int, order_date: string, store: Store, variant_id: int, sku_raw: ?string, qty: int, revenue: ?float}>  $rows
      * @param  array{warehouse_id: int, status: string}  $options
      * @param  list<string>  $errors
+     * @return array{0: int, 1: int} [tersimpan, dilewati]
      */
-    private function store(array $rows, SalesImportBatch $batch, array $options, array &$errors): int
+    private function store(array $rows, SalesImportBatch $batch, array $options, array &$errors): array
     {
         $created = 0;
-        DB::beginTransaction();
+        $skipped = 0;
 
-        try {
-            foreach ($rows as $row) {
-                // SalesOrderService memakai transaksi bersarang (savepoint), jadi baris gagal tidak merusak transaksi luar.
-                try {
-                    $this->orders->create([
-                        'store_id' => $row['store']->id,
-                        'warehouse_id' => $options['warehouse_id'],
-                        'order_no' => sprintf('IMP%d-%04d', $batch->id, $row['line']),
-                        'order_date' => $row['order_date'],
-                        'status' => $options['status'] ?? SalesOrderStatus::Completed->value,
-                        'import_batch_id' => $batch->id,
-                    ], [[
-                        'variant_id' => $row['variant_id'],
-                        'sku_raw' => $row['sku_raw'],
-                        'qty' => $row['qty'],
-                        'revenue' => $row['revenue'],
-                    ]]);
-                    $created++;
-                } catch (BusinessRuleException $exception) {
-                    $errors[] = "Baris {$row['line']}: {$exception->getMessage()}";
-                } catch (QueryException $exception) {
-                    $errors[] = "Baris {$row['line']}: gagal disimpan ({$this->firstLine($exception)}).";
-                }
+        /** @var array<string, int> sisa pesanan yang sudah ada per sidik baris */
+        $existing = [];
+
+        foreach ($rows as $row) {
+            $key = $this->signature($row);
+            $existing[$key] ??= $this->existingCount($row);
+
+            // Baris identik dalam satu file tetap diimpor sebanyak yang belum ada di sistem.
+            if ($existing[$key] > 0) {
+                $existing[$key]--;
+                $skipped++;
+
+                continue;
             }
-        } catch (Throwable $exception) {
-            DB::rollBack();
 
-            throw $exception;
+            try {
+                DB::transaction(fn () => $this->orders->create([
+                    'store_id' => $row['store']->id,
+                    'warehouse_id' => $options['warehouse_id'],
+                    'order_no' => sprintf('IMP%d-%04d', $batch->id, $row['line']),
+                    'order_date' => $row['order_date'],
+                    'status' => $options['status'] ?? SalesOrderStatus::Completed->value,
+                    'import_batch_id' => $batch->id,
+                ], [[
+                    'variant_id' => $row['variant_id'],
+                    'sku_raw' => $row['sku_raw'],
+                    'qty' => $row['qty'],
+                    'revenue' => $row['revenue'],
+                ]]));
+                $created++;
+            } catch (BusinessRuleException $exception) {
+                $errors[] = "Baris {$row['line']}: {$exception->getMessage()}";
+            } catch (QueryException $exception) {
+                $errors[] = "Baris {$row['line']}: gagal disimpan ({$this->firstLine($exception)}).";
+            }
         }
 
-        if ($errors !== []) {
-            DB::rollBack();
-
-            return 0;
-        }
-
-        DB::commit();
-
-        return $created;
+        return [$created, $skipped];
     }
 
     /**
-     * @return array{0: list<array<string, mixed>>, 1: list<string>}
+     * @param  array{order_date: string, store: Store, variant_id: int, qty: int, revenue: ?float}  $row
+     */
+    private function signature(array $row): string
+    {
+        return implode('|', [
+            $row['store']->id, $row['order_date'], $row['variant_id'], $row['qty'],
+            $row['revenue'] === null ? '-' : number_format($row['revenue'], 2, '.', ''),
+        ]);
+    }
+
+    /**
+     * Jumlah baris pesanan yang sudah ada dengan toko, tanggal, SKU, qty, dan pendapatan yang sama.
+     *
+     * @param  array{order_date: string, store: Store, variant_id: int, qty: int, revenue: ?float}  $row
+     */
+    private function existingCount(array $row): int
+    {
+        return SalesOrderItem::query()
+            ->join('sales_orders', 'sales_orders.id', '=', 'sales_order_items.sales_order_id')
+            ->where('sales_orders.store_id', $row['store']->id)
+            ->whereDate('sales_orders.order_date', $row['order_date'])
+            ->where('sales_order_items.variant_id', $row['variant_id'])
+            ->where('sales_order_items.qty', $row['qty'])
+            ->when(
+                $row['revenue'] === null,
+                fn ($query) => $query->whereNull('sales_order_items.revenue'),
+                fn ($query) => $query->where('sales_order_items.revenue', round($row['revenue'], 2)),
+            )
+            ->count();
+    }
+
+    /**
+     * @return array{0: list<array<string, mixed>>, 1: list<string>, 2: int} [baris valid, error, jumlah baris data]
      */
     private function parse(string $path, string $fileName): array
     {
@@ -149,7 +213,7 @@ class SalesOrderImporter
             }
         }
 
-        return [$rows, $errors];
+        return [$rows, $errors, count($lines)];
     }
 
     /**

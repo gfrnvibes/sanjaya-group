@@ -9,7 +9,6 @@ use BackedEnum;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\DeleteBulkAction;
-use Filament\Actions\EditAction;
 use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
@@ -122,7 +121,6 @@ class ResellerPriceHistoryResource extends Resource
                     ->searchable(),
             ])
             ->recordActions([
-                EditAction::make(),
                 DeleteAction::make(),
             ])
             ->toolbarActions([
@@ -133,13 +131,21 @@ class ResellerPriceHistoryResource extends Resource
     }
 
     /**
-     * Harga yang sudah dipakai snapshot penjualan tidak boleh diubah/dihapus.
+     * Harga dasar dibuat otomatis dari resep + margin (PricingService::syncFromBom), tidak diisi manual.
      */
-    public static function canEdit(Model $record): bool
+    public static function canCreate(): bool
     {
-        return $record->salesOrderItems()->doesntExist();
+        return false;
     }
 
+    public static function canEdit(Model $record): bool
+    {
+        return false;
+    }
+
+    /**
+     * Harga yang sudah dipakai snapshot penjualan tidak boleh dihapus.
+     */
     public static function canDelete(Model $record): bool
     {
         return $record->salesOrderItems()->doesntExist();

@@ -4,11 +4,13 @@ namespace App\Services;
 
 use App\Enums\BomColorMode;
 use App\Enums\BomLineType;
+use App\Enums\MaterialMovementType;
 use App\Enums\VariantCostSource;
 use App\Exceptions\BusinessRuleException;
 use App\Models\Bom;
 use App\Models\BomItem;
 use App\Models\Material;
+use App\Models\MaterialMovement;
 use App\Models\MaterialPurchaseItem;
 use App\Models\ProductVariant;
 use App\Models\VariantCost;
@@ -47,15 +49,33 @@ class CostingService
             ->first();
     }
 
+    /**
+     * Harga per satuan dasar: pembelian terakhir s.d. tanggal; bila belum ada, harga stok awal,
+     * lalu pembelian pertama sesudahnya (agar HPP resep lama tidak jadi Rp 0).
+     */
     public function latestUnitCost(Material $material, CarbonInterface|string $date): string
     {
-        return (string) (MaterialPurchaseItem::query()
+        $purchases = fn () => MaterialPurchaseItem::query()
             ->join('material_purchases', 'material_purchases.id', '=', 'material_purchase_items.purchase_id')
-            ->where('material_purchase_items.material_id', $material->id)
+            ->where('material_purchase_items.material_id', $material->id);
+
+        $openingCost = fn () => MaterialMovement::query()
+            ->where('material_id', $material->id)
+            ->where('movement_type', MaterialMovementType::Opening)
+            ->whereNotNull('unit_cost');
+
+        $cost = $purchases()
             ->whereDate('material_purchases.purchase_date', '<=', $date)
             ->orderByDesc('material_purchases.purchase_date')
             ->orderByDesc('material_purchase_items.id')
-            ->value('material_purchase_items.unit_cost') ?? '0');
+            ->value('material_purchase_items.unit_cost')
+            ?? $openingCost()->orderByDesc('moved_at')->value('unit_cost')
+            ?? $purchases()
+                ->orderBy('material_purchases.purchase_date')
+                ->orderBy('material_purchase_items.id')
+                ->value('material_purchase_items.unit_cost');
+
+        return (string) ($cost ?? '0');
     }
 
     /**

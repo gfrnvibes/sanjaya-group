@@ -3,10 +3,12 @@
 namespace App\Filament\Resources\ProductVariants\RelationManagers;
 
 use App\Filament\Resources\VariantCosts\VariantCostResource;
-use Filament\Actions\CreateAction;
 use Filament\Resources\RelationManagers\RelationManager;
 use Filament\Tables\Table;
 
+/**
+ * Riwayat HPP (dihitung dari resep; tidak diisi manual).
+ */
 class CostsRelationManager extends RelationManager
 {
     protected static string $relationship = 'costs';
@@ -17,9 +19,6 @@ class CostsRelationManager extends RelationManager
 
     public function table(Table $table): Table
     {
-        return $table
-            ->headerActions([
-                CreateAction::make(),
-            ]);
+        return $table;
     }
 }

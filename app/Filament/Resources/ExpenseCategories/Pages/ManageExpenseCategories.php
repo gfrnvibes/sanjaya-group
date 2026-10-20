@@ -2,7 +2,9 @@
 
 namespace App\Filament\Resources\ExpenseCategories\Pages;
 
+use App\Filament\Actions\ResourceIo;
 use App\Filament\Resources\ExpenseCategories\ExpenseCategoryResource;
+use App\Imports\ExpenseCategoryImport;
 use Filament\Actions\CreateAction;
 use Filament\Resources\Pages\ManageRecords;
 
@@ -13,6 +15,7 @@ class ManageExpenseCategories extends ManageRecords
     protected function getHeaderActions(): array
     {
         return [
+            ...ResourceIo::make(ExpenseCategoryImport::class),
             CreateAction::make(),
         ];
     }

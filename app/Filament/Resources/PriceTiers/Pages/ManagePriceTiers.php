@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\PriceTiers\Pages;
 
+use App\Filament\Actions\StoreActions;
 use App\Filament\Resources\PriceTiers\PriceTierResource;
 use Filament\Actions\CreateAction;
 use Filament\Resources\Pages\ManageRecords;
@@ -13,6 +14,7 @@ class ManagePriceTiers extends ManageRecords
     protected function getHeaderActions(): array
     {
         return [
+            ...StoreActions::make(),
             CreateAction::make(),
         ];
     }

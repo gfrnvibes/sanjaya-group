@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\WorkOrders\Pages;
 
+use App\Filament\Actions\ResourceIo;
 use App\Filament\Resources\WorkOrders\WorkOrderResource;
 use Filament\Actions\CreateAction;
 use Filament\Resources\Pages\ListRecords;
@@ -13,6 +14,7 @@ class ListWorkOrders extends ListRecords
     protected function getHeaderActions(): array
     {
         return [
+            ...ResourceIo::make(),
             CreateAction::make(),
         ];
     }

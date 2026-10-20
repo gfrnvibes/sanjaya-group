@@ -3,10 +3,12 @@
 namespace App\Filament\Resources\ProductVariants\RelationManagers;
 
 use App\Filament\Resources\ResellerPriceHistories\ResellerPriceHistoryResource;
-use Filament\Actions\CreateAction;
 use Filament\Resources\RelationManagers\RelationManager;
 use Filament\Tables\Table;
 
+/**
+ * Riwayat harga dasar (otomatis dari resep + margin; tidak diisi manual).
+ */
 class PriceHistoriesRelationManager extends RelationManager
 {
     protected static string $relationship = 'priceHistories';
@@ -17,10 +19,6 @@ class PriceHistoriesRelationManager extends RelationManager
 
     public function table(Table $table): Table
     {
-        return $table
-            ->headerActions([
-                CreateAction::make()
-                    ->mutateDataUsing(fn (array $data): array => [...$data, 'approved_by' => auth()->id()]),
-            ]);
+        return $table;
     }
 }

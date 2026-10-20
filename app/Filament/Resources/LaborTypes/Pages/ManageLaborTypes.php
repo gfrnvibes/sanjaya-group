@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\LaborTypes\Pages;
 
+use App\Filament\Actions\CatalogActions;
 use App\Filament\Resources\LaborTypes\LaborTypeResource;
 use Filament\Actions\CreateAction;
 use Filament\Resources\Pages\ManageRecords;
@@ -13,6 +14,7 @@ class ManageLaborTypes extends ManageRecords
     protected function getHeaderActions(): array
     {
         return [
+            ...CatalogActions::make(),
             CreateAction::make(),
         ];
     }

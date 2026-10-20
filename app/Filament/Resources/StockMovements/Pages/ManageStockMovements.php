@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\StockMovements\Pages;
 
+use App\Filament\Actions\ResourceIo;
 use App\Filament\Resources\StockMovements\StockMovementResource;
 use App\Models\ProductVariant;
 use App\Models\Warehouse;
@@ -26,6 +27,7 @@ class ManageStockMovements extends ManageRecords
     protected function getHeaderActions(): array
     {
         return [
+            ...ResourceIo::make(),
             Action::make('opening')
                 ->label('Stok Awal')
                 ->icon(Heroicon::OutlinedPlusCircle)

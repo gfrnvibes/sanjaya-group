@@ -7,9 +7,7 @@ use App\Enums\BomColorMode;
 use App\Enums\BomLineType;
 use App\Enums\MaterialKind;
 use App\Enums\MaterialMovementType;
-use App\Enums\PriceSource;
 use App\Enums\ProductKind;
-use App\Enums\VariantCostSource;
 use App\Exceptions\BusinessRuleException;
 use App\Models\Bom;
 use App\Models\BomItem;
@@ -25,7 +23,6 @@ use App\Models\Setting;
 use App\Models\Size;
 use App\Models\SkuAlias;
 use App\Models\Supplier;
-use App\Models\VariantCost;
 use App\Models\Warehouse;
 use App\Support\Spreadsheet;
 use App\Support\SpreadsheetRow;
@@ -46,6 +43,7 @@ use Throwable;
  *  - Resep BOM (1 baris = 1 komponen; dikelompokkan per model + ukuran + berlaku mulai)
  *  - Pembelian (1 baris = 1 item; dikelompokkan per tanggal + supplier + no ref + gudang)
  * Master (model, varian, bahan) yang sudah ada DIPERBARUI dari sel yang terisi; sel kosong = tidak diubah.
+ * HPP & harga reseller TIDAK diimpor: dihitung otomatis dari resep + margin untuk varian yang terdampak.
  * Tiap baris (Bahan/Produk) atau dokumen (Resep/Pembelian) disimpan terpisah: yang valid tersimpan.
  */
 class CatalogImporter
@@ -89,11 +87,6 @@ class CatalogImporter
                 'MARGIN VARIAN %' => 'margin',
                 'AKTIF' => 'is_active',
                 'SKU BIG SELLER' => 'aliases',
-                'HPP BAHAN' => 'material_cost',
-                'HPP ONGKOS' => 'labor_cost',
-                'HPP BERLAKU MULAI' => 'cost_from',
-                'HARGA RESELLER' => 'base_price',
-                'HARGA BERLAKU MULAI' => 'price_from',
             ],
             'required' => ['model_code', 'sku'],
         ],
@@ -155,7 +148,13 @@ class CatalogImporter
     /** @var list<string> peringatan baris yang sedang diproses */
     private array $pendingWarnings = [];
 
-    public function __construct(private InventoryService $inventory) {}
+    /** @var array<string, array{variant_id: int, date: ?string}> varian yang harganya dihitung ulang setelah impor */
+    private array $priceTriggers = [];
+
+    /** @var array<string, array{variant_id: int, date: ?string}> pemicu harga baris yang sedang diproses */
+    private array $pendingTriggers = [];
+
+    public function __construct(private InventoryService $inventory, private PricingService $pricing) {}
 
     /**
      * @return array{rows: int, sheets: list<string>, stats: array<string, array{created: int, updated: int, skipped: int}>, errors: list<string>, warnings: list<string>}
@@ -165,6 +164,7 @@ class CatalogImporter
         $this->stats = [];
         $this->errors = [];
         $this->warnings = [];
+        $this->priceTriggers = [];
 
         try {
             $sheets = Spreadsheet::readSheets($path, $fileName, collect(self::SHEETS)
@@ -198,6 +198,8 @@ class CatalogImporter
             Str::lower(Spreadsheet::text($values['ref_no'] ?? null)),
             Str::lower(Spreadsheet::text($values['warehouse'] ?? null)),
         ]))->each(fn (Collection $rows) => $this->attempt($this->whereGroup('purchases', $rows), fn () => $this->importPurchase($rows)));
+
+        $this->syncPrices();
 
         return [
             'rows' => collect($sheets)->sum(fn (array $rows): int => count($rows)),
@@ -287,11 +289,6 @@ class CatalogImporter
         $margin = $v->percent('margin', 'MARGIN VARIAN %');
         $minStock = $v->number('min_stock', 'MIN STOK', min: 0, integer: true);
         $isActive = $v->bool('is_active');
-        $materialCost = $v->number('material_cost', 'HPP BAHAN', min: 0);
-        $laborCost = $v->number('labor_cost', 'HPP ONGKOS', min: 0);
-        $basePrice = $v->number('base_price', 'HARGA RESELLER', min: 0);
-        $costFrom = $v->date('cost_from', 'HPP BERLAKU MULAI', required: $materialCost !== null || $laborCost !== null);
-        $priceFrom = $v->date('price_from', 'HARGA BERLAKU MULAI', required: $basePrice !== null);
         $v->throwIfInvalid();
 
         $category = $v->text('category') !== '' ? $this->category($v->text('category')) : null;
@@ -318,7 +315,12 @@ class CatalogImporter
             ]);
         } else {
             $model->fill($modelAttributes);
+            $modelMarginChanged = $model->isDirty('default_margin_pct');
             $this->saveIfDirty($model, 'Model');
+
+            if ($modelMarginChanged) {
+                $this->triggerPrice($model->variants()->pluck('id'), today()->toDateString());
+            }
         }
 
         $variant = $this->findCi(ProductVariant::withTrashed(), 'sku', $sku);
@@ -344,8 +346,17 @@ class CatalogImporter
                 ...$variantAttributes,
             ]);
             $this->bump('Varian', 'created');
+            $this->triggerPrice([$variant->id], null);
         } else {
             $variant->fill(['model_id' => $model->id, ...$variantAttributes]);
+
+            // Harga otomatis: margin berubah = berlaku hari ini; model/warna/ukuran berubah = dari tanggal resep.
+            if ($variant->isDirty('margin_pct')) {
+                $this->triggerPrice([$variant->id], today()->toDateString());
+            } elseif ($variant->isDirty(['model_id', 'color_id', 'size_id'])) {
+                $this->triggerPrice([$variant->id], null);
+            }
+
             $this->saveIfDirty($variant, 'Varian');
         }
 
@@ -363,40 +374,6 @@ class CatalogImporter
                 $this->bump('Pemetaan SKU', 'created');
             } elseif ($existing->variant_id !== $variant->id) {
                 throw new BusinessRuleException("SKU BIG SELLER \"{$alias}\" sudah dipetakan ke varian lain.");
-            }
-        }
-
-        $cost = null;
-
-        if ($costFrom !== null) {
-            $cost = $variant->costs()->whereDate('effective_from', $costFrom)->first();
-            $values = ['material_cost' => $materialCost ?? 0, 'labor_cost' => $laborCost ?? 0];
-
-            if ($cost === null) {
-                $cost = $variant->costs()->create([...$values, 'effective_from' => $costFrom, 'source' => VariantCostSource::Legacy]);
-                $this->bump('HPP', 'created');
-            } elseif ((float) $cost->material_cost !== (float) $values['material_cost'] || (float) $cost->labor_cost !== (float) $values['labor_cost']) {
-                $cost->update([...$values, 'source' => VariantCostSource::Legacy]);
-                $this->bump('HPP', 'updated');
-            }
-        }
-
-        if ($priceFrom !== null) {
-            $price = $variant->priceHistories()->whereDate('effective_from', $priceFrom)->first();
-
-            if ($price === null) {
-                $variant->priceHistories()->create([
-                    'effective_from' => $priceFrom,
-                    'base_price' => $basePrice,
-                    'variant_cost_id' => $cost?->id ?? $this->costAt($variant, $priceFrom)?->id,
-                    'source' => PriceSource::Import,
-                    'approved_by' => auth()->id(),
-                    'note' => self::NOTE,
-                ]);
-                $this->bump('Harga Reseller', 'created');
-            } elseif ((float) $price->base_price !== $basePrice) {
-                $price->update(['base_price' => $basePrice, 'source' => PriceSource::Import, 'approved_by' => auth()->id()]);
-                $this->bump('Harga Reseller', 'updated');
             }
         }
     }
@@ -502,6 +479,11 @@ class CatalogImporter
         }
 
         $bom->items()->createMany($lines);
+
+        $this->triggerPrice(
+            ProductVariant::query()->where('model_id', $model->id)->when($size, fn ($query) => $query->where('size_id', $size->id))->pluck('id'),
+            $effectiveFrom,
+        );
     }
 
     /**
@@ -605,6 +587,11 @@ class CatalogImporter
             'note' => $first->text('note') ?: self::NOTE,
         ], $items);
         $this->bump('Pembelian Bahan', 'created');
+
+        $this->triggerPrice(
+            collect($this->pricing->variantsUsingMaterials(array_column($items, 'material_id')))->pluck('id'),
+            $date,
+        );
     }
 
     /**
@@ -637,9 +624,43 @@ class CatalogImporter
             ])) === $expected);
     }
 
-    private function costAt(ProductVariant $variant, string $date): ?VariantCost
+    /**
+     * Catat varian yang HPP & harganya perlu dihitung ulang setelah impor (null = tanggal resep yang berlaku).
+     *
+     * @param  iterable<int>  $variantIds
+     */
+    private function triggerPrice(iterable $variantIds, ?string $date): void
     {
-        return $variant->costs()->whereDate('effective_from', '<=', $date)->orderByDesc('effective_from')->first();
+        foreach ($variantIds as $variantId) {
+            $this->pendingTriggers[$variantId.'|'.$date] = ['variant_id' => (int) $variantId, 'date' => $date];
+        }
+    }
+
+    /**
+     * HARGA OTOMATIS: hitung HPP dari resep & harga reseller (HPP x (1 + margin)) untuk varian yang terdampak impor.
+     */
+    private function syncPrices(): void
+    {
+        $result = ['synced' => 0, 'skipped' => []];
+
+        collect($this->priceTriggers)
+            ->groupBy('date')
+            ->sortKeys()
+            ->each(function ($triggers, $date) use (&$result): void {
+                $variants = ProductVariant::query()->whereIn('id', $triggers->pluck('variant_id'))->get();
+                $synced = $this->pricing->syncVariants($variants, $date === '' ? null : $date);
+
+                $result['synced'] += $synced['synced'];
+                $result['skipped'] = [...$result['skipped'], ...$synced['skipped']];
+            });
+
+        if ($result['synced'] > 0) {
+            $this->stats['Harga Reseller (otomatis)'] = ['created' => $result['synced'], 'updated' => 0, 'skipped' => 0];
+        }
+
+        foreach (array_unique($result['skipped']) as $skipped) {
+            $this->warnings[] = "Harga otomatis belum dibuat — {$skipped}";
+        }
     }
 
     /**
@@ -909,6 +930,7 @@ class CatalogImporter
     {
         $this->pending = [];
         $this->pendingWarnings = [];
+        $this->pendingTriggers = [];
 
         try {
             DB::transaction($callback);
@@ -924,6 +946,8 @@ class CatalogImporter
             foreach ($this->pendingWarnings as $warning) {
                 $this->warnings[] = "{$where}: {$warning}";
             }
+
+            $this->priceTriggers = [...$this->priceTriggers, ...$this->pendingTriggers];
         } catch (BusinessRuleException $exception) {
             $this->errors[] = "{$where}: ".rtrim($exception->getMessage(), '.').'.';
         } catch (QueryException $exception) {
@@ -935,6 +959,7 @@ class CatalogImporter
 
         $this->pending = [];
         $this->pendingWarnings = [];
+        $this->pendingTriggers = [];
     }
 
     /**

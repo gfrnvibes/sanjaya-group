@@ -2,9 +2,9 @@
 
 namespace App\Filament\Resources\ProductVariants\Tables;
 
-use App\Exceptions\BusinessRuleException;
+use App\Filament\Support\PriceSyncNotification;
 use App\Models\ProductVariant;
-use App\Services\CostingService;
+use App\Services\PricingService;
 use Filament\Actions\Action;
 use Filament\Actions\BulkAction;
 use Filament\Actions\BulkActionGroup;
@@ -100,22 +100,25 @@ class ProductVariantsTable
                 ViewAction::make(),
                 EditAction::make(),
                 Action::make('refreshCost')
-                    ->label('Hitung HPP')
+                    ->label('Hitung HPP & Harga')
                     ->icon(Heroicon::OutlinedCalculator)
                     ->color('gray')
                     ->requiresConfirmation()
-                    ->modalDescription('Hitung HPP dari resep (BOM) x harga beli bahan terakhir, simpan sebagai HPP berlaku hari ini.')
-                    ->action(function (ProductVariant $record, CostingService $costing): void {
-                        try {
-                            $cost = $costing->refreshVariantCost($record);
-                        } catch (BusinessRuleException $exception) {
-                            Notification::make()->title($exception->getMessage())->danger()->send();
+                    ->modalDescription('Hitung HPP dari resep (BOM) x harga beli bahan terakhir, lalu buat harga reseller otomatis (HPP x (1 + margin)) berlaku hari ini.')
+                    ->action(function (ProductVariant $record, PricingService $pricing): void {
+                        $result = $pricing->syncVariants([$record], today());
+
+                        if ($result['skipped'] !== []) {
+                            Notification::make()->title($result['skipped'][0])->danger()->send();
 
                             return;
                         }
 
+                        $price = $record->priceHistories()->whereDate('effective_from', '<=', today())->orderByDesc('effective_from')->first();
+
                         Notification::make()
-                            ->title('HPP '.$record->sku.' = Rp '.number_format((float) $cost->fresh()->total_cost, 0, ',', '.'))
+                            ->title("{$record->sku}: HPP Rp ".number_format((float) $price?->variantCost?->total_cost, 0, ',', '.')
+                                .', harga dasar Rp '.number_format((float) $price?->base_price, 0, ',', '.'))
                             ->success()
                             ->send();
                     }),
@@ -123,26 +126,10 @@ class ProductVariantsTable
             ->toolbarActions([
                 BulkActionGroup::make([
                     BulkAction::make('refreshCosts')
-                        ->label('Hitung HPP dari BOM')
+                        ->label('Hitung HPP & Harga dari Resep')
                         ->icon(Heroicon::OutlinedCalculator)
                         ->requiresConfirmation()
-                        ->action(function (Collection $records, CostingService $costing): void {
-                            $failed = [];
-
-                            foreach ($records as $record) {
-                                try {
-                                    $costing->refreshVariantCost($record);
-                                } catch (BusinessRuleException $exception) {
-                                    $failed[] = $exception->getMessage();
-                                }
-                            }
-
-                            Notification::make()
-                                ->title(($records->count() - count($failed)).' HPP diperbarui')
-                                ->body($failed === [] ? null : implode("\n", array_slice($failed, 0, 5)))
-                                ->color($failed === [] ? 'success' : 'warning')
-                                ->send();
-                        })
+                        ->action(fn (Collection $records, PricingService $pricing) => PriceSyncNotification::send($pricing->syncVariants($records, today())))
                         ->deselectRecordsAfterCompletion(),
                     DeleteBulkAction::make(),
                     ForceDeleteBulkAction::make(),

@@ -261,6 +261,14 @@ class Spreadsheet
         }
     }
 
+    /**
+     * Nama sheet yang valid untuk Excel: tanpa \ / ? * : [ ], maksimal 31 karakter.
+     */
+    public static function sheetName(string $name): string
+    {
+        return mb_substr(trim(preg_replace('/\s+/', ' ', preg_replace('/[\\\\\/?*:\[\]]/', '-', $name))), 0, 31) ?: 'Data';
+    }
+
     public static function tempPath(string $extension): string
     {
         $directory = storage_path('app/private/exports');

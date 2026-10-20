@@ -30,9 +30,14 @@ class CatalogSpreadsheet
     /** Format multi-sheet. CSV hanya 1 sheet per file. */
     public const FORMATS = ['xlsx' => 'Excel (.xlsx)', 'ods' => 'OpenDocument (.ods)'];
 
+    /** Kolom hasil hitung otomatis (header hijau): hanya di export, diabaikan saat impor. */
+    private const AUTO_COLUMNS = [
+        'products' => ['HPP BAHAN', 'HPP ONGKOS', 'HPP', 'MARGIN BERLAKU %', 'HARGA RESELLER', 'HARGA BERLAKU MULAI'],
+    ];
+
     private const WIDTHS = [
         'materials' => [16, 20, 14, 11, 14, 22, 12, 11, 16, 10, 8, 11, 20, 12, 13],
-        'products' => [16, 12, 24, 13, 13, 11, 14, 9, 16, 32, 9, 14, 8, 26, 11, 11, 16, 14, 18],
+        'products' => [16, 12, 24, 13, 13, 11, 14, 9, 16, 32, 9, 14, 8, 26, 11, 11, 11, 14, 14, 18],
         'boms' => [12, 9, 13, 24, 13, 16, 22, 15, 12, 16, 14],
         'purchases' => [12, 22, 15, 14, 12, 22, 10, 15, 14, 24],
     ];
@@ -67,8 +72,8 @@ class CatalogSpreadsheet
             ['Produk', 'KODE / NAMA WARNA, UKURAN', '-', 'Warna & ukuran varian.'],
             ['Produk', 'SKU VARIAN', 'Ya', 'Kunci varian. NAMA VARIAN kosong = "Model Warna Ukuran".'],
             ['Produk', 'SKU BIG SELLER', '-', 'Boleh lebih dari satu, pisahkan dengan koma. Hanya ditambahkan, tidak dihapus.'],
-            ['Produk', 'HPP BAHAN, HPP ONGKOS, HPP BERLAKU MULAI', 'Tgl bila HPP diisi', 'Riwayat HPP varian (sumber: legacy).'],
-            ['Produk', 'HARGA RESELLER, HARGA BERLAKU MULAI', 'Tgl bila harga diisi', 'Harga dasar reseller (sumber: import). Wajib ada agar penjualan bisa dihitung.'],
+            ['Produk', 'HPP & HARGA RESELLER', 'Otomatis', 'Tidak diisi: HPP dihitung dari resep x harga beli bahan, harga dasar = HPP x (1 + margin), berlaku mulai tanggal resep/pembelian.'],
+            ['', '', '', 'Di file export kolom ini berheader hijau (hanya info) dan diabaikan saat impor ulang.'],
             ['', '', '', ''],
             ['Resep BOM', 'KODE MODEL, UKURAN, BERLAKU MULAI', 'Model & tgl: Ya', '1 baris = 1 komponen. Baris dengan model + ukuran + tanggal sama = 1 resep. UKURAN kosong = semua ukuran.'],
             ['Resep BOM', 'JENIS BARIS', 'Ya', 'bahan / ongkos. Resep yang sudah ada diganti seluruh komponennya.'],
@@ -102,7 +107,7 @@ class CatalogSpreadsheet
         if ($format === 'csv') {
             $writer = new CsvWriter;
             $writer->openToFile($path);
-            $writer->addRow(Spreadsheet::headerRow(array_fill_keys(array_keys(CatalogImporter::SHEETS[$sheet]['headers']), true)));
+            $writer->addRow($this->headerRow($sheet, withAuto: true));
             $this->rows($sheet)->each(fn (array $row) => $writer->addRow(Row::fromValues($row)));
             $writer->close();
 
@@ -111,16 +116,27 @@ class CatalogSpreadsheet
 
         $writer = $format === 'ods' ? new OdsWriter : new XlsxWriter;
         $writer->openToFile($path);
-        $this->writeDataSheets($writer, fn (string $type): Collection => $this->rows($type));
+        $this->writeDataSheets($writer, fn (string $type): Collection => $this->rows($type), withAuto: true);
         $writer->close();
 
         return $path;
     }
 
     /**
+     * Header merah (diimpor) + header hijau kolom otomatis (hanya export).
+     */
+    private function headerRow(string $type, bool $withAuto): Row
+    {
+        return Spreadsheet::headerRow([
+            ...array_fill_keys(array_keys(CatalogImporter::SHEETS[$type]['headers']), true),
+            ...($withAuto ? array_fill_keys(self::AUTO_COLUMNS[$type] ?? [], false) : []),
+        ]);
+    }
+
+    /**
      * @param  callable(string): iterable<list<mixed>>  $rows
      */
-    private function writeDataSheets(AbstractWriterMultiSheets $writer, callable $rows): void
+    private function writeDataSheets(AbstractWriterMultiSheets $writer, callable $rows, bool $withAuto = false): void
     {
         $first = true;
 
@@ -133,7 +149,7 @@ class CatalogSpreadsheet
                 $sheet->setColumnWidth($width, $index + 1);
             }
 
-            $writer->addRow(Spreadsheet::headerRow(array_fill_keys(array_keys($definition['headers']), true)));
+            $writer->addRow($this->headerRow($type, $withAuto));
 
             foreach ($rows($type) as $row) {
                 $writer->addRow(Row::fromValues($row));
@@ -163,15 +179,17 @@ class CatalogSpreadsheet
                 ->with(['costs' => fn ($q) => $q->orderByDesc('effective_from'), 'priceHistories' => fn ($q) => $q->orderByDesc('effective_from')])
                 ->orderBy('sku')->get()
                 ->map(function (ProductVariant $v) use ($yesNo, $percent): array {
-                    $cost = $v->costs->first();
-                    $price = $v->priceHistories->first();
+                    // HPP & harga yang berlaku hari ini (otomatis dari resep + margin).
+                    $current = fn ($items) => $items->first(fn ($item): bool => $item->effective_from->lte(today())) ?? $items->last();
+                    $cost = $current($v->costs);
+                    $price = $current($v->priceHistories);
 
                     return [
                         $v->model->category?->name, $v->model->code, $v->model->name, $v->model->kind->value, $percent($v->model->default_margin_pct),
                         $v->color?->code, $v->color?->name, $v->size?->code, $v->sku, $v->name, $v->min_stock, $percent($v->margin_pct),
                         $yesNo($v->is_active), $v->skuAliases->pluck('alias')->implode(', '),
-                        $cost ? (float) $cost->material_cost : null, $cost ? (float) $cost->labor_cost : null, $cost?->effective_from->toDateString(),
-                        $price ? (float) $price->base_price : null, $price?->effective_from->toDateString(),
+                        $cost ? (float) $cost->material_cost : null, $cost ? (float) $cost->labor_cost : null, $cost ? (float) $cost->total_cost : null,
+                        $percent($price?->margin_pct), $price ? (float) $price->base_price : null, $price?->effective_from->toDateString(),
                     ];
                 }),
             'boms' => Bom::query()->with(['model', 'size', 'items.materialType', 'items.material', 'items.laborType'])

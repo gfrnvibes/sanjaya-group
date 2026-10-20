@@ -9,7 +9,6 @@ use BackedEnum;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\DeleteBulkAction;
-use Filament\Actions\EditAction;
 use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
@@ -20,6 +19,7 @@ use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Model;
 use UnitEnum;
 
 class VariantCostResource extends Resource
@@ -108,7 +108,6 @@ class VariantCostResource extends Resource
                     ->searchable(),
             ])
             ->recordActions([
-                EditAction::make(),
                 DeleteAction::make(),
             ])
             ->toolbarActions([
@@ -116,6 +115,27 @@ class VariantCostResource extends Resource
                     DeleteBulkAction::make(),
                 ]),
             ]);
+    }
+
+    /**
+     * HPP dihitung dari resep (PricingService::syncFromBom), tidak diisi manual.
+     */
+    public static function canCreate(): bool
+    {
+        return false;
+    }
+
+    public static function canEdit(Model $record): bool
+    {
+        return false;
+    }
+
+    /**
+     * HPP yang menjadi acuan harga reseller tidak boleh dihapus.
+     */
+    public static function canDelete(Model $record): bool
+    {
+        return $record->priceHistories()->doesntExist();
     }
 
     public static function getPages(): array
