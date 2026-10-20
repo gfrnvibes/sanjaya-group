@@ -88,7 +88,7 @@ class WorkOrderService
 
                 if ($item->qty_good > 0) {
                     $this->ledger->moveStock(
-                        $item->variant_id, $workOrder->warehouse_id, $item->qty_good, StockMovementType::ProductionIn,
+                        $item->variant_id, $workOrder->goodsWarehouseId(), $item->qty_good, StockMovementType::ProductionIn,
                         $item, (float) $item->material_cost_snapshot + (float) $item->labor_cost_snapshot,
                         "SPK {$workOrder->code}", Carbon::parse($finishedDate),
                     );

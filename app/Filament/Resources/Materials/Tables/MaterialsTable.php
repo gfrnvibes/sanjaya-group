@@ -89,7 +89,8 @@ class MaterialsTable
                             ->required(),
                         Select::make('warehouse_id')
                             ->label('Gudang')
-                            ->options(fn () => Warehouse::query()->where('is_active', true)->pluck('name', 'id'))
+                            ->options(fn (): array => Warehouse::materialOptions())
+                            ->default(fn () => Warehouse::defaultForMaterials()?->id)
                             ->required(),
                         TextInput::make('qty')
                             ->label('Qty (satuan dasar)')

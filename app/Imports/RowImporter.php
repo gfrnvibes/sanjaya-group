@@ -2,12 +2,12 @@
 
 namespace App\Imports;
 
+use App\Enums\WarehouseKind;
 use App\Exceptions\BusinessRuleException;
 use App\Models\CashAccount;
 use App\Models\ExpenseCategory;
 use App\Models\ProductVariant;
 use App\Models\Reseller;
-use App\Models\Setting;
 use App\Models\SkuAlias;
 use App\Models\Store;
 use App\Models\Supplier;
@@ -289,24 +289,29 @@ abstract class RowImporter
     }
 
     /**
-     * Gudang dari kode/nama; dibuat otomatis bila belum ada. Kosong = gudang default.
+     * Gudang BARANG JADI dari kode/nama; dibuat otomatis (jenis barang jadi) bila belum ada.
+     * Kosong = gudang default barang jadi. Gudang bahan ditolak oleh StockLedger.
      */
     protected function warehouse(string $value): Warehouse
     {
         if ($value === '') {
-            $warehouse = Warehouse::query()->find(Setting::valueOf('default_warehouse_id')) ?? Warehouse::query()->first();
+            $warehouse = Warehouse::defaultForGoods();
 
             if ($warehouse !== null) {
                 return $warehouse;
             }
 
-            $value = 'Gudang Utama';
+            $value = 'Gudang Barang Jadi';
         }
 
         $warehouse = $this->findCi(Warehouse::query(), 'code', $value) ?? $this->findCi(Warehouse::query(), 'name', $value);
 
         if ($warehouse === null) {
-            $warehouse = Warehouse::create(['code' => $this->uniqueCode(Warehouse::class, $value, 20), 'name' => Str::limit($value, 80, '')]);
+            $warehouse = Warehouse::create([
+                'code' => $this->uniqueCode(Warehouse::class, $value, 20),
+                'name' => Str::limit($value, 80, ''),
+                'kind' => WarehouseKind::BarangJadi,
+            ]);
             $this->bump('created', 'Gudang');
             $this->warn("gudang \"{$warehouse->name}\" dibuat otomatis (kode {$warehouse->code}).");
         }

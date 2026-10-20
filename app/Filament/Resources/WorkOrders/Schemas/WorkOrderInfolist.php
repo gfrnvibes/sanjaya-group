@@ -34,7 +34,10 @@ class WorkOrderInfolist
                             ->label('Penjahit')
                             ->placeholder('-'),
                         TextEntry::make('warehouse.name')
-                            ->label('Gudang'),
+                            ->label('Gudang Bahan'),
+                        TextEntry::make('goodsWarehouse.name')
+                            ->label('Gudang Barang Jadi')
+                            ->placeholder('Sama dengan gudang bahan'),
                         TextEntry::make('cut_date')
                             ->label('Tanggal Potong')
                             ->date(),

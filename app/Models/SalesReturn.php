@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\ReturnReason;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -11,7 +12,7 @@ use Illuminate\Database\Eloquent\Relations\MorphMany;
  * Retur sebagian / penuh. restock -> stock_movements(return_in) ke warehouse_id;
  * credit_reseller -> mengurangi tagihan reseller.
  */
-#[Fillable(['sales_order_item_id', 'returned_at', 'qty', 'restock', 'warehouse_id', 'credit_reseller', 'reseller_invoice_id', 'note', 'created_by'])]
+#[Fillable(['sales_order_item_id', 'returned_at', 'qty', 'reason', 'restock', 'warehouse_id', 'credit_reseller', 'reseller_invoice_id', 'note', 'created_by'])]
 class SalesReturn extends Model
 {
     protected function casts(): array
@@ -19,6 +20,7 @@ class SalesReturn extends Model
         return [
             'returned_at' => 'date',
             'qty' => 'integer',
+            'reason' => ReturnReason::class,
             'restock' => 'boolean',
             'credit_reseller' => 'boolean',
         ];

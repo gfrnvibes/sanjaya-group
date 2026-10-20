@@ -4,10 +4,12 @@ namespace App\Services;
 
 use App\Enums\MaterialMovementType;
 use App\Enums\StockMovementType;
+use App\Exceptions\BusinessRuleException;
 use App\Models\MaterialBalance;
 use App\Models\MaterialMovement;
 use App\Models\StockBalance;
 use App\Models\StockMovement;
+use App\Models\Warehouse;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Model;
 
@@ -27,6 +29,8 @@ class StockLedger
         ?string $note = null,
         CarbonInterface|string|null $movedAt = null,
     ): StockMovement {
+        $this->ensureWarehouse($warehouseId, goods: true);
+
         return StockMovement::create([
             'variant_id' => $variantId,
             'warehouse_id' => $warehouseId,
@@ -51,6 +55,8 @@ class StockLedger
         ?string $note = null,
         CarbonInterface|string|null $movedAt = null,
     ): MaterialMovement {
+        $this->ensureWarehouse($warehouseId, goods: false);
+
         return MaterialMovement::create([
             'material_id' => $materialId,
             'warehouse_id' => $warehouseId,
@@ -63,6 +69,29 @@ class StockLedger
             'note' => $note,
             'created_by' => auth()->id(),
         ]);
+    }
+
+    /**
+     * Barang jadi hanya di gudang barang jadi / campuran; bahan hanya di gudang bahan / campuran.
+     *
+     * @throws BusinessRuleException
+     */
+    private function ensureWarehouse(int $warehouseId, bool $goods): void
+    {
+        static $warehouses = [];
+        $warehouse = $warehouses[$warehouseId] ??= Warehouse::query()->find($warehouseId, ['id', 'name', 'kind']);
+
+        if ($warehouse === null) {
+            return;
+        }
+
+        if ($goods && ! $warehouse->kind->storesGoods()) {
+            throw new BusinessRuleException("\"{$warehouse->name}\" adalah gudang bahan baku, tidak bisa untuk stok barang jadi. Pilih gudang barang jadi.");
+        }
+
+        if (! $goods && ! $warehouse->kind->storesMaterials()) {
+            throw new BusinessRuleException("\"{$warehouse->name}\" adalah gudang barang jadi, tidak bisa untuk stok bahan. Pilih gudang bahan baku.");
+        }
     }
 
     public function stockQty(int $variantId, int $warehouseId): int

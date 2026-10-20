@@ -2,12 +2,14 @@
 
 namespace App\Filament\Resources\SalesReturns;
 
+use App\Enums\ReturnReason;
 use App\Filament\Resources\SalesOrders\SalesOrderResource;
 use App\Filament\Resources\SalesReturns\Pages\ManageSalesReturns;
 use App\Models\SalesReturn;
 use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Actions\EditAction;
+use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Resources\Resource;
@@ -16,6 +18,7 @@ use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\Summarizers\Sum;
 use Filament\Tables\Columns\TextColumn;
+use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Filters\TernaryFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
@@ -53,6 +56,10 @@ class SalesReturnResource extends Resource
     {
         return $schema
             ->components([
+                Select::make('reason')
+                    ->label('Alasan Retur')
+                    ->options(ReturnReason::class)
+                    ->required(),
                 Toggle::make('credit_reseller')
                     ->label('Kurangi tagihan reseller')
                     ->disabled(fn (SalesReturn $record): bool => $record->reseller_invoice_id !== null),
@@ -88,6 +95,10 @@ class SalesReturnResource extends Resource
                 TextColumn::make('qty')
                     ->label('Qty')
                     ->summarize(Sum::make()->label('Total')),
+                TextColumn::make('reason')
+                    ->label('Alasan')
+                    ->badge()
+                    ->placeholder('Belum diisi'),
                 TextColumn::make('credit_amount')
                     ->label('Nilai Kredit')
                     ->state(fn (SalesReturn $record): float => $record->credit_reseller ? $record->qty * (float) $record->salesOrderItem->reseller_unit_price : 0)
@@ -110,6 +121,10 @@ class SalesReturnResource extends Resource
                     ->toggleable(),
             ])
             ->filters([
+                SelectFilter::make('reason')
+                    ->label('Alasan')
+                    ->options(ReturnReason::class)
+                    ->multiple(),
                 TernaryFilter::make('restock')
                     ->label('Restock'),
                 TernaryFilter::make('credit_reseller')

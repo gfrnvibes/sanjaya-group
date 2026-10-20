@@ -4,7 +4,6 @@ namespace App\Filament\Resources\SalesOrders\Schemas;
 
 use App\Enums\SalesOrderStatus;
 use App\Models\ProductVariant;
-use App\Models\Setting;
 use App\Models\Warehouse;
 use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\Repeater;
@@ -47,8 +46,8 @@ class SalesOrderForm
                             ->disabledOn('edit'),
                         Select::make('warehouse_id')
                             ->label('Gudang Asal')
-                            ->relationship('warehouse', 'name')
-                            ->default(fn () => Setting::valueOf('default_warehouse_id') ?? Warehouse::query()->value('id'))
+                            ->relationship('warehouse', 'name', fn ($query) => $query->forGoods())
+                            ->default(fn () => Warehouse::defaultForGoods()?->id)
                             ->required()
                             ->disabledOn('edit'),
                         Select::make('status')

@@ -38,11 +38,17 @@ class WorkOrderForm
                             ->required()
                             ->disabledOn('edit'),
                         Select::make('warehouse_id')
-                            ->label('Gudang (bahan & barang jadi)')
-                            ->relationship('warehouse', 'name')
-                            ->default(fn () => Warehouse::query()->value('id'))
+                            ->label('Gudang Bahan (dipotong)')
+                            ->relationship('warehouse', 'name', fn (Builder $query) => $query->forMaterials())
+                            ->default(fn () => Warehouse::defaultForMaterials()?->id)
                             ->required()
                             ->disabledOn('edit'),
+                        Select::make('goods_warehouse_id')
+                            ->label('Gudang Barang Jadi (hasil)')
+                            ->relationship('goodsWarehouse', 'name', fn (Builder $query) => $query->forGoods())
+                            ->default(fn () => Warehouse::defaultForGoods()?->id)
+                            ->helperText('Hasil jahit masuk ke sini saat SPK selesai.')
+                            ->required(fn (string $operation): bool => $operation === 'create'),
                         Select::make('tailor_id')
                             ->label('Penjahit')
                             ->relationship('tailor', 'name', fn (Builder $query) => $query->where('is_active', true))

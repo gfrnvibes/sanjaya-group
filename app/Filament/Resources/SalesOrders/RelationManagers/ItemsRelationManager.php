@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\SalesOrders\RelationManagers;
 
+use App\Enums\ReturnReason;
 use App\Enums\SalesOrderStatus;
 use App\Exceptions\BusinessRuleException;
 use App\Models\SalesOrderItem;
@@ -94,13 +95,17 @@ class ItemsRelationManager extends RelationManager
                             ->maxValue($record->qty - (int) $record->returned_qty)
                             ->default($record->qty - (int) $record->returned_qty)
                             ->required(),
+                        Select::make('reason')
+                            ->label('Alasan Retur')
+                            ->options(ReturnReason::class)
+                            ->required(),
                         Toggle::make('restock')
                             ->label('Barang kembali ke stok')
                             ->default(true)
                             ->live(),
                         Select::make('warehouse_id')
                             ->label('Gudang')
-                            ->options(fn () => Warehouse::query()->pluck('name', 'id'))
+                            ->options(fn (): array => Warehouse::goodsOptions())
                             ->default(fn (): int => $this->getOwnerRecord()->warehouse_id)
                             ->required(fn (Get $get): bool => (bool) $get('restock'))
                             ->visible(fn (Get $get): bool => (bool) $get('restock')),

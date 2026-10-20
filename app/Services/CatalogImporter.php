@@ -8,6 +8,7 @@ use App\Enums\BomLineType;
 use App\Enums\MaterialKind;
 use App\Enums\MaterialMovementType;
 use App\Enums\ProductKind;
+use App\Enums\WarehouseKind;
 use App\Exceptions\BusinessRuleException;
 use App\Models\Bom;
 use App\Models\BomItem;
@@ -19,7 +20,6 @@ use App\Models\MaterialType;
 use App\Models\ProductCategory;
 use App\Models\ProductModel;
 use App\Models\ProductVariant;
-use App\Models\Setting;
 use App\Models\Size;
 use App\Models\SkuAlias;
 use App\Models\Supplier;
@@ -871,18 +871,19 @@ class CatalogImporter
     }
 
     /**
-     * Gudang dari kode/nama; bila belum ada dibuat. Kosong = gudang default (dibuat "Gudang Utama" bila belum ada gudang sama sekali).
+     * Gudang BAHAN (stok awal & pembelian bahan) dari kode/nama; bila belum ada dibuat dengan jenis bahan.
+     * Kosong = gudang default bahan (dibuat "Gudang Bahan Baku" bila belum ada sama sekali).
      */
     private function warehouse(string $value): Warehouse
     {
         if ($value === '') {
-            $warehouse = Warehouse::query()->find(Setting::valueOf('default_warehouse_id')) ?? Warehouse::query()->first();
+            $warehouse = Warehouse::defaultForMaterials();
 
             if ($warehouse !== null) {
                 return $warehouse;
             }
 
-            $value = 'Gudang Utama';
+            $value = 'Gudang Bahan Baku';
         }
 
         $warehouse = $this->findCi(Warehouse::query(), 'code', $value) ?? $this->findCi(Warehouse::query(), 'name', $value);
@@ -891,7 +892,11 @@ class CatalogImporter
             return $warehouse;
         }
 
-        $warehouse = Warehouse::create(['code' => $this->uniqueCode(Warehouse::class, $value, 20), 'name' => Str::limit($value, 80, '')]);
+        $warehouse = Warehouse::create([
+            'code' => $this->uniqueCode(Warehouse::class, $value, 20),
+            'name' => Str::limit($value, 80, ''),
+            'kind' => WarehouseKind::Bahan,
+        ]);
         $this->warn("gudang \"{$warehouse->name}\" dibuat otomatis (kode {$warehouse->code}).");
         $this->bump('Gudang', 'created');
 

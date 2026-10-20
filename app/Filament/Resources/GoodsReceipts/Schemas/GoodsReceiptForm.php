@@ -38,8 +38,8 @@ class GoodsReceiptForm
                             ->disabledOn('edit'),
                         Select::make('warehouse_id')
                             ->label('Gudang')
-                            ->relationship('warehouse', 'name')
-                            ->default(fn () => Warehouse::query()->value('id'))
+                            ->relationship('warehouse', 'name', fn ($query) => $query->forGoods())
+                            ->default(fn () => Warehouse::defaultForGoods()?->id)
                             ->required()
                             ->disabledOn('edit'),
                         Select::make('source')

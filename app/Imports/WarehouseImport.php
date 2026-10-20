@@ -2,6 +2,7 @@
 
 namespace App\Imports;
 
+use App\Enums\WarehouseKind;
 use App\Models\Warehouse;
 use App\Support\SpreadsheetRow;
 use Illuminate\Support\Collection;
@@ -22,6 +23,7 @@ class WarehouseImport extends RowImporter
         return [
             'KODE GUDANG' => ['code', 'Ya', 'Kode unik, mis. UTAMA. Gudang yang sudah ada diperbarui.'],
             'NAMA GUDANG' => ['name', 'Gudang baru', 'Default = kode.'],
+            'JENIS' => ['kind', '-', 'Bahan Baku / Barang Jadi / Campuran. Gudang baru tanpa jenis = Campuran.'],
             'AKTIF' => ['is_active', '-', 'Ya / Tidak. Default Ya.'],
         ];
     }
@@ -38,10 +40,11 @@ class WarehouseImport extends RowImporter
         $row->requireText(['code' => 'KODE GUDANG']);
         $row->maxLength(['code' => ['KODE GUDANG', 20], 'name' => ['NAMA GUDANG', 80]]);
         $active = $row->bool('is_active');
+        $kind = $row->enum('kind', WarehouseKind::class, 'JENIS', ['bahan baku' => WarehouseKind::Bahan, 'barang jadi' => WarehouseKind::BarangJadi, 'jadi' => WarehouseKind::BarangJadi]);
         $row->throwIfInvalid();
 
         $code = Str::upper($row->text('code'));
-        $attributes = array_filter(['name' => $row->text('name') ?: null, 'is_active' => $active], fn ($value): bool => $value !== null);
+        $attributes = array_filter(['name' => $row->text('name') ?: null, 'kind' => $kind, 'is_active' => $active], fn ($value): bool => $value !== null);
         $warehouse = $this->findCi(Warehouse::query(), 'code', $code);
 
         if ($warehouse === null) {

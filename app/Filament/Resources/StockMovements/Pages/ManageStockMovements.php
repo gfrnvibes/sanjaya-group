@@ -39,8 +39,8 @@ class ManageStockMovements extends ManageRecords
                         ->required(),
                     Select::make('warehouse_id')
                         ->label('Gudang')
-                        ->options(fn () => Warehouse::query()->where('is_active', true)->pluck('name', 'id'))
-                        ->default(fn () => Warehouse::query()->value('id'))
+                        ->options(fn (): array => Warehouse::goodsOptions())
+                        ->default(fn () => Warehouse::defaultForGoods()?->id)
                         ->required(),
                     TextInput::make('qty')
                         ->label('Qty')

@@ -11,7 +11,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 /**
  * SPK / list potongan.
  */
-#[Fillable(['code', 'tailor_id', 'warehouse_id', 'cut_date', 'finished_date', 'status', 'note', 'created_by'])]
+#[Fillable(['code', 'tailor_id', 'warehouse_id', 'goods_warehouse_id', 'cut_date', 'finished_date', 'status', 'note', 'created_by'])]
 class WorkOrder extends Model
 {
     protected $attributes = [
@@ -33,10 +33,29 @@ class WorkOrder extends Model
         return $this->belongsTo(Tailor::class);
     }
 
-    /** @return BelongsTo<Warehouse, $this> */
+    /**
+     * Gudang bahan: bahan keluar saat dipotong.
+     *
+     * @return BelongsTo<Warehouse, $this>
+     */
     public function warehouse(): BelongsTo
     {
         return $this->belongsTo(Warehouse::class);
+    }
+
+    /**
+     * Gudang barang jadi: hasil jahit masuk saat SPK selesai (SPK lama: kosong = gudang bahan).
+     *
+     * @return BelongsTo<Warehouse, $this>
+     */
+    public function goodsWarehouse(): BelongsTo
+    {
+        return $this->belongsTo(Warehouse::class, 'goods_warehouse_id');
+    }
+
+    public function goodsWarehouseId(): int
+    {
+        return (int) ($this->goods_warehouse_id ?? $this->warehouse_id);
     }
 
     /** @return HasMany<WorkOrderItem, $this> */

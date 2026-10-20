@@ -2,6 +2,7 @@
 
 namespace App\Imports;
 
+use App\Enums\ReturnReason;
 use App\Exceptions\BusinessRuleException;
 use App\Models\SalesOrder;
 use App\Models\SalesReturn;
@@ -30,6 +31,7 @@ class SalesReturnImport extends RowImporter
             'NO PESANAN' => ['order_no', 'Ya', 'No. pesanan di sistem (lihat menu Pesanan / export pesanan).'],
             'SKU VARIAN' => ['sku', 'Ya', 'SKU varian atau SKU BigSeller pada pesanan tersebut.'],
             'QTY' => ['qty', 'Ya', 'Maksimal sisa qty yang belum diretur.'],
+            'ALASAN' => ['reason', '-', 'Cacat jahitan / Cacat bahan / Ukuran tidak sesuai / Salah kirim / Tidak sesuai foto / Rusak saat pengiriman / Pembeli berubah pikiran / Lainnya. Kosong = Lainnya.'],
             'MASUK STOK' => ['restock', '-', 'Ya / Tidak. Default Ya (barang kembali ke stok).'],
             'GUDANG' => ['warehouse', '-', 'Gudang tujuan bila masuk stok. Kosong = gudang asal pesanan.'],
             'POTONG TAGIHAN' => ['credit_reseller', '-', 'Ya / Tidak. Default Ya (mengurangi tagihan reseller).'],
@@ -49,6 +51,13 @@ class SalesReturnImport extends RowImporter
         $row->requireText(['store' => 'NAMA TOKO', 'order_no' => 'NO PESANAN', 'sku' => 'SKU VARIAN']);
         $date = $row->date('returned_at', 'TANGGAL RETUR', required: true);
         $qty = $row->number('qty', 'QTY', min: 1, required: true, integer: true);
+        $reason = $row->enum('reason', ReturnReason::class, 'ALASAN', [
+            'cacat jahit' => ReturnReason::CacatJahit, 'jahitan' => ReturnReason::CacatJahit,
+            'cacat' => ReturnReason::CacatBahan, 'bahan' => ReturnReason::CacatBahan,
+            'ukuran' => ReturnReason::SalahUkuran, 'salah ukuran' => ReturnReason::SalahUkuran,
+            'salah kirim' => ReturnReason::SalahKirim, 'tidak sesuai' => ReturnReason::TidakSesuai,
+            'rusak' => ReturnReason::RusakKirim, 'berubah pikiran' => ReturnReason::BerubahPikiran,
+        ]) ?? ReturnReason::Lainnya;
         $restock = $row->bool('restock', 'MASUK STOK') ?? true;
         $credit = $row->bool('credit_reseller', 'POTONG TAGIHAN') ?? true;
         $row->maxLength(['note' => ['CATATAN', 255]]);
@@ -71,6 +80,7 @@ class SalesReturnImport extends RowImporter
         $this->orders->registerReturn($item, [
             'returned_at' => $date,
             'qty' => (int) $qty,
+            'reason' => $reason,
             'restock' => $restock,
             'warehouse_id' => $restock && $row->filled('warehouse') ? $this->warehouse($row->text('warehouse'))->id : null,
             'credit_reseller' => $credit,

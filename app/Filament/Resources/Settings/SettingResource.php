@@ -10,6 +10,7 @@ use Filament\Actions\EditAction;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Resources\Resource;
+use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\TextColumn;
@@ -48,9 +49,19 @@ class SettingResource extends Resource
             'target_stock_days' => 'Target hari stok',
             'lead_time_days' => 'Lead time produksi (hari)',
             'production_batch' => 'Kelipatan qty produksi',
-            'default_warehouse_id' => 'ID gudang default',
+            'default_warehouse_id' => 'ID gudang default barang jadi (penjualan, barang masuk, retur, hasil SPK)',
+            'default_material_warehouse_id' => 'ID gudang default bahan baku (pembelian, stok awal bahan, potong SPK)',
+            'dead_stock_days' => 'Stok lambat laku bila tidak terjual (hari)',
+            'return_alert_pct' => 'Batas peringatan % retur (0.10 = 10%)',
+            'return_alert_min_qty' => 'Minimal qty retur untuk peringatan (pcs)',
+            'report_emails' => 'Email penerima laporan mingguan (pisahkan koma)',
         ];
     }
+
+    /**
+     * Pengaturan berisi teks (bukan angka).
+     */
+    public const TEXT_KEYS = ['report_emails'];
 
     public static function form(Schema $schema): Schema
     {
@@ -62,11 +73,12 @@ class SettingResource extends Resource
                     ->searchable()
                     ->required()
                     ->disabledOn('edit')
-                    ->unique(ignoreRecord: true),
+                    ->unique(ignoreRecord: true)
+                    ->live(),
                 TextInput::make('value')
                     ->label('Nilai')
                     ->required()
-                    ->numeric(),
+                    ->numeric(fn (Get $get): bool => ! in_array($get('key'), static::TEXT_KEYS, true)),
             ]);
     }
 

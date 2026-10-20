@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Warehouses;
 
+use App\Enums\WarehouseKind;
 use App\Filament\Resources\Warehouses\Pages\ManageWarehouses;
 use App\Models\Warehouse;
 use BackedEnum;
@@ -9,6 +10,7 @@ use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
+use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Resources\Resource;
@@ -48,6 +50,12 @@ class WarehouseResource extends Resource
                     ->label('Nama')
                     ->required()
                     ->maxLength(80),
+                Select::make('kind')
+                    ->label('Jenis')
+                    ->options(WarehouseKind::class)
+                    ->default(WarehouseKind::Campuran)
+                    ->helperText('Bahan Baku: hanya stok bahan. Barang Jadi: hanya stok produk. Campuran: keduanya.')
+                    ->required(),
                 Toggle::make('is_active')
                     ->label('Aktif')
                     ->default(true),
@@ -68,6 +76,9 @@ class WarehouseResource extends Resource
                 TextColumn::make('name')
                     ->label('Nama')
                     ->searchable(),
+                TextColumn::make('kind')
+                    ->label('Jenis')
+                    ->badge(),
                 TextColumn::make('stock_qty')
                     ->label('Total Stok Barang (pcs)')
                     ->numeric(),

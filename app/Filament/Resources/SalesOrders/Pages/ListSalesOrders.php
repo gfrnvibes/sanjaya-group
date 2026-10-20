@@ -6,7 +6,6 @@ use App\Enums\SalesImportSource;
 use App\Enums\SalesOrderStatus;
 use App\Filament\Resources\SalesImportBatches\SalesImportBatchResource;
 use App\Filament\Resources\SalesOrders\SalesOrderResource;
-use App\Models\Setting;
 use App\Models\Warehouse;
 use App\Services\SalesOrderImporter;
 use App\Services\SalesOrderSpreadsheet;
@@ -89,8 +88,8 @@ class ListSalesOrders extends ListRecords
                     ->required(),
                 Select::make('warehouse_id')
                     ->label('Gudang Asal')
-                    ->options(fn () => Warehouse::query()->pluck('name', 'id'))
-                    ->default(fn () => Setting::valueOf('default_warehouse_id') ?? Warehouse::query()->value('id'))
+                    ->options(fn (): array => Warehouse::goodsOptions())
+                    ->default(fn () => Warehouse::defaultForGoods()?->id)
                     ->required(),
                 Select::make('status')
                     ->label('Status Pesanan')

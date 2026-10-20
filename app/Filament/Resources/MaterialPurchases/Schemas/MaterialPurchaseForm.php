@@ -44,8 +44,8 @@ class MaterialPurchaseForm
                             ]),
                         Select::make('warehouse_id')
                             ->label('Gudang Tujuan')
-                            ->relationship('warehouse', 'name')
-                            ->default(fn () => Warehouse::query()->value('id'))
+                            ->relationship('warehouse', 'name', fn ($query) => $query->forMaterials())
+                            ->default(fn () => Warehouse::defaultForMaterials()?->id)
                             ->required()
                             ->disabledOn('edit'),
                         TextInput::make('ref_no')
