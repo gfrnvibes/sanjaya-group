@@ -52,6 +52,15 @@ class SalesOrderImporter
         'PENDAPATAN TOKO' => 'revenue',
     ];
 
+    /** Header export BigSeller (Analisa Bisnis > SKU Toko) => kunci. Kolom TANGGAL ditambahkan manual di belakang; sel kosong memakai tanggal dari form impor. */
+    public const BIGSELLER_COLUMNS = [
+        'TANGGAL' => 'order_date',
+        'NAMA TOKO' => 'store',
+        'NOMOR SKU TOKO' => 'sku_bigseller',
+        'PENJUALAN PRODUK VALID' => 'qty',
+        'DANA PENJUALAN PRODUK VALID' => 'revenue',
+    ];
+
     /** Kolom ID baris gagal (terisi di file baris gagal, kosong di file biasa). */
     public const FAILURE_ID_COLUMN = 'ID GAGAL';
 
@@ -68,7 +77,7 @@ class SalesOrderImporter
      * yang sama persis dengan file sebelumnya (atau pesanan yang sudah ada) dilewati.
      *
      * @param  list<array{path: string, name: string}>  $files
-     * @param  array{warehouse_id: int, status: string, source: string}  $options
+     * @param  array{warehouse_id: int, status: string, source: string, order_date?: ?string}  $options
      * @return array{batches: list<SalesImportBatch>, files: int, rows: int, created: int, skipped: int, fixed: int, errors: list<string>}
      */
     public function importMany(array $files, array $options): array
@@ -93,7 +102,7 @@ class SalesOrderImporter
     }
 
     /**
-     * @param  array{warehouse_id: int, status: string, source: string}  $options
+     * @param  array{warehouse_id: int, status: string, source: string, order_date?: ?string}  $options
      * @return array{batch: SalesImportBatch, rows: int, created: int, skipped: int, fixed: int, errors: list<string>}
      */
     public function import(string $path, string $fileName, array $options): array
@@ -109,7 +118,7 @@ class SalesOrderImporter
         $this->fixed = [];
 
         try {
-            [$rows, $errors, $lineCount] = $this->parse($path, $fileName);
+            [$rows, $errors, $lineCount] = $this->parse($path, $fileName, $options['order_date'] ?? null);
         } catch (BusinessRuleException $exception) {
             [$rows, $errors, $lineCount] = [[], [$exception->getMessage()], 0];
             $this->fail(0, [], ImportFailureReason::FileFormat, $exception->getMessage());
@@ -274,19 +283,43 @@ class SalesOrderImporter
     /**
      * @return array{0: list<array<string, mixed>>, 1: list<string>, 2: int} [baris valid, error, jumlah baris data]
      */
-    private function parse(string $path, string $fileName): array
+    private function parse(string $path, string $fileName, ?string $orderDate): array
     {
         $rows = [];
         $errors = [];
 
-        $lines = Spreadsheet::read($path, $fileName, [
-            ...self::COLUMNS,
-            'SKU BIGSELLER' => 'sku_bigseller',
-            self::FAILURE_ID_COLUMN => 'failure_id',
-        ], ['order_date', 'store', 'qty', ['sku', 'sku_bigseller']],
-            'Header tidak ditemukan. Pastikan ada kolom TANGGAL, NAMA TOKO, SKU VARIAN / SKU BIG SELLER, dan QTY (gunakan template).');
+        // Format manual (template) dicoba dulu, lalu format export BigSeller "Analisa Bisnis SKU Toko".
+        $sheets = Spreadsheet::readSheets($path, $fileName, [
+            'manual' => [
+                'headers' => [
+                    ...self::COLUMNS,
+                    'SKU BIGSELLER' => 'sku_bigseller',
+                    self::FAILURE_ID_COLUMN => 'failure_id',
+                ],
+                'required' => ['order_date', 'store', 'qty', ['sku', 'sku_bigseller']],
+            ],
+            'bigseller' => [
+                'headers' => self::BIGSELLER_COLUMNS,
+                'required' => ['store', 'sku_bigseller', 'qty'],
+            ],
+        ], firstSheetOnly: true);
+
+        $lines = reset($sheets);
+
+        if ($lines === false) {
+            throw new BusinessRuleException('Header tidak ditemukan. Gunakan template (kolom TANGGAL, NAMA TOKO, SKU VARIAN / SKU BIG SELLER, QTY) atau file export BigSeller (Nama Toko, Nomor SKU Toko, Penjualan Produk Valid, Dana Penjualan Produk Valid).');
+        }
+
+        if (array_key_first($sheets) === 'bigseller') {
+            // Export BigSeller berisi semua SKU toko; SKU tanpa penjualan (qty 0) bukan pesanan.
+            $lines = array_values(array_filter($lines, fn (array $line): bool => Spreadsheet::parseNumber($line['values']['qty'] ?? null) != 0));
+        }
 
         foreach ($lines as $line) {
+            if (($line['values']['order_date'] ?? null) === null || $line['values']['order_date'] === '') {
+                $line['values']['order_date'] = $orderDate;
+            }
+
             $parsed = $this->parseRow($line['values'], $line['line'], $errors);
 
             if ($parsed !== null) {

@@ -11,6 +11,7 @@ use App\Models\Warehouse;
 use App\Services\SalesOrderImporter;
 use App\Services\SalesOrderSpreadsheet;
 use Filament\Actions\Action;
+use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\Select;
 use Filament\Notifications\Notification;
@@ -40,7 +41,7 @@ class SalesOrderImportActions
             ->label('Import Excel')
             ->icon(Heroicon::OutlinedArrowUpTray)
             ->modalHeading('Import Pesanan dari Excel')
-            ->modalDescription('Bisa beberapa file sekaligus (1 file = 1 batch impor), termasuk file baris gagal yang sudah diperbaiki. Kolom wajib: TANGGAL, NAMA TOKO, SKU VARIAN / SKU BIG SELLER, QTY, PENDAPATAN TOKO. Harga reseller, margin, dan total tagihan dihitung otomatis. Baris valid disimpan; baris gagal dicatat beserta alasannya di menu Import Gagal. Baris yang sama persis dengan pesanan yang sudah ada dilewati.')
+            ->modalDescription('Bisa beberapa file sekaligus (1 file = 1 batch impor), termasuk file baris gagal yang sudah diperbaiki. Format template (TANGGAL, NAMA TOKO, SKU VARIAN / SKU BIG SELLER, QTY, PENDAPATAN TOKO) atau file export BigSeller (Nama Toko, Nomor SKU Toko, Penjualan Produk Valid, Dana Penjualan Produk Valid + kolom TANGGAL di belakang). Harga reseller, margin, dan total tagihan dihitung otomatis. Baris valid disimpan; baris gagal dicatat beserta alasannya di menu Import Gagal. Baris yang sama persis dengan pesanan yang sudah ada dilewati.')
             ->modalSubmitActionLabel('Import')
             ->schema([
                 FileUpload::make('files')
@@ -60,6 +61,10 @@ class SalesOrderImportActions
                     ])
                     ->maxSize(10240)
                     ->required(),
+                DatePicker::make('order_date')
+                    ->label('Tanggal Pesanan Cadangan')
+                    ->helperText('Untuk file export BigSeller: isi kolom TANGGAL di belakang kolom terakhir; baris yang TANGGAL-nya kosong memakai tanggal ini. SKU dengan penjualan 0 dilewati. File template manual tetap memakai kolom TANGGAL.')
+                                        ->native(false),
                 Select::make('warehouse_id')
                     ->label('Gudang Asal')
                     ->options(fn (): array => Warehouse::goodsOptions())
@@ -90,6 +95,7 @@ class SalesOrderImportActions
                         [
                             'warehouse_id' => (int) $data['warehouse_id'],
                             'status' => $data['status'],
+                            'order_date' => $data['order_date'] ?? null,
                             'source' => $data['source'] instanceof SalesImportSource ? $data['source']->value : $data['source'],
                         ],
                     );

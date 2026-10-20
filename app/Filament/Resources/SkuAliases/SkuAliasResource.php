@@ -53,12 +53,7 @@ class SkuAliasResource extends Resource
                     ->hidden(fn ($livewire): bool => $livewire instanceof RelationManager),
                 Select::make('source')
                     ->label('Sumber')
-                    ->options([
-                        'bigseller' => 'BigSeller',
-                        'shopee' => 'Shopee',
-                        'tiktok' => 'TikTok',
-                        'lainnya' => 'Lainnya',
-                    ])
+                    ->options(SkuAlias::SOURCES)
                     ->default('bigseller')
                     ->required(),
             ]);
@@ -69,8 +64,9 @@ class SkuAliasResource extends Resource
         return $table
             ->modifyQueryUsing(fn ($query) => $query->with('variant'))
             ->columns([
+                // Label kolom = header template import Pemetaan SKU (SkuAliasImport), agar hasil export bisa diimpor ulang.
                 TextColumn::make('alias')
-                    ->label('Alias')
+                    ->label('SKU Big Seller')
                     ->searchable()
                     ->sortable()
                     ->copyable(),
@@ -82,17 +78,13 @@ class SkuAliasResource extends Resource
                     ->toggleable(),
                 TextColumn::make('source')
                     ->label('Sumber')
+                    ->formatStateUsing(fn (?string $state): ?string => SkuAlias::SOURCES[$state] ?? $state)
                     ->badge(),
             ])
             ->filters([
                 SelectFilter::make('source')
                     ->label('Sumber')
-                    ->options([
-                        'bigseller' => 'BigSeller',
-                        'shopee' => 'Shopee',
-                        'tiktok' => 'TikTok',
-                        'lainnya' => 'Lainnya',
-                    ]),
+                    ->options(SkuAlias::SOURCES),
             ])
             ->recordActions([
                 EditAction::make(),

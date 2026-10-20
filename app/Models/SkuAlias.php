@@ -12,6 +12,14 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 #[Fillable(['alias', 'variant_id', 'source'])]
 class SkuAlias extends Model
 {
+    /** Sumber pemetaan: kode => label. */
+    public const SOURCES = [
+        'bigseller' => 'BigSeller',
+        'shopee' => 'Shopee',
+        'tiktok' => 'TikTok',
+        'lainnya' => 'Lainnya',
+    ];
+
     /** @return BelongsTo<ProductVariant, $this> */
     public function variant(): BelongsTo
     {
