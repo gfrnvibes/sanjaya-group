@@ -35,6 +35,12 @@ class SalesImportBatch extends Model
         return $this->hasMany(SalesOrder::class, 'import_batch_id');
     }
 
+    /** @return HasMany<SalesImportFailure, $this> */
+    public function failures(): HasMany
+    {
+        return $this->hasMany(SalesImportFailure::class, 'batch_id');
+    }
+
     /** @return BelongsTo<User, $this> */
     public function importer(): BelongsTo
     {

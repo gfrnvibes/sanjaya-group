@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Enums\BomColorMode;
 use App\Enums\PriceSource;
 use App\Exceptions\BusinessRuleException;
+use App\Exceptions\MissingPriceException;
 use App\Models\Bom;
 use App\Models\BomItem;
 use App\Models\Material;
@@ -37,7 +38,7 @@ class PricingService
         if (! $price) {
             $sku = ProductVariant::query()->whereKey($variantId)->value('sku');
 
-            throw new BusinessRuleException("Harga reseller untuk {$sku} belum ada pada tanggal {$date}.");
+            throw new MissingPriceException("Harga reseller untuk {$sku} belum ada pada tanggal {$date}.");
         }
 
         $tierPct = (float) DB::scalar('select fn_owner_tier_pct(?, ?)', [$ownerId, $date]);

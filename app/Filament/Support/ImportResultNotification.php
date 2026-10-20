@@ -22,7 +22,7 @@ class ImportResultNotification
             ->map(fn (array $counts, string $label): string => $label.': '.collect([
                 'baru' => $counts['created'],
                 'diperbarui' => $counts['updated'],
-                'dilewati (sudah ada)' => $counts['skipped'],
+                'tidak berubah / sudah ada' => $counts['skipped'],
             ])->filter()->map(fn (int $count, string $kind): string => "{$count} {$kind}")->implode(', '))
             ->filter(fn (string $line): bool => ! str_ends_with($line, ': '))
             ->values();

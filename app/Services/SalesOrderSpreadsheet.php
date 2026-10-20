@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\ProductVariant;
+use App\Models\SalesImportFailure;
 use App\Models\SalesOrder;
 use App\Models\SalesOrderItem;
 use App\Models\Store;
@@ -80,6 +81,88 @@ class SalesOrderSpreadsheet
             ['Contoh', '2026-10-01 | Ground Supply Tiktok | TJN | | 1 | 52492'],
         ]);
 
+        $this->referenceSheets($writer);
+        $writer->close();
+
+        return $path;
+    }
+
+    /**
+     * File BARIS GAGAL: kolom input asli (merah, perbaiki di sini) + alasan gagal & cara memperbaiki (hijau).
+     * File ini bisa langsung diimport ulang; kolom ID GAGAL menandai baris lama sebagai sudah diperbaiki.
+     *
+     * @param  Builder<SalesImportFailure>  $failures
+     */
+    public function failures(Builder $failures): string
+    {
+        $path = Spreadsheet::tempPath('xlsx');
+        $writer = new XlsxWriter;
+        $writer->openToFile($path);
+
+        $sheet = $writer->getCurrentSheet();
+        $sheet->setName('Baris Gagal');
+        foreach ([14, 30, 16, 24, 8, 18, 10, 24, 60, 70, 30, 8] as $index => $width) {
+            $sheet->setColumnWidth($width, $index + 1);
+        }
+
+        $writer->addRow(Spreadsheet::headerRow([
+            ...array_fill_keys(array_keys(SalesOrderImporter::COLUMNS), true),
+            SalesOrderImporter::FAILURE_ID_COLUMN => false,
+            'KATEGORI' => false,
+            'ALASAN GAGAL' => false,
+            'CARA MEMPERBAIKI' => false,
+            'FILE ASAL' => false,
+            'BARIS ASAL' => false,
+        ]));
+
+        $rowCount = 0;
+
+        $failures->clone()
+            ->where('line', '>', 0) // gagal per file (header salah) tidak punya baris data
+            ->with('batch')
+            ->reorder()
+            ->orderBy('batch_id')
+            ->orderBy('line')
+            ->chunk(500, function ($chunk) use ($writer, &$rowCount): void {
+                foreach ($chunk as $failure) {
+                    /** @var SalesImportFailure $failure */
+                    $writer->addRow(Row::fromValues([
+                        ...array_map(fn (string $label): ?string => $failure->value($label), array_keys(SalesOrderImporter::COLUMNS)),
+                        $failure->id,
+                        $failure->reason->getLabel(),
+                        $failure->message,
+                        $failure->reason->hint(),
+                        $failure->batch?->file_name,
+                        $failure->line,
+                    ]));
+                    $rowCount++;
+                }
+            });
+
+        if ($rowCount > 0) {
+            $sheet->setAutoFilter(new AutoFilter(0, 1, 11, $rowCount + 1));
+        }
+
+        Spreadsheet::addSheet($writer, 'Petunjuk', [24, 100], [
+            ['LANGKAH', 'KETERANGAN'],
+            ['1. Perbaiki', 'Ubah kolom header MERAH sesuai ALASAN GAGAL dan CARA MEMPERBAIKI. Bila masalahnya di master data (toko belum terdaftar, SKU belum dipetakan, harga belum terbentuk), perbaiki dulu di menunya lalu biarkan baris apa adanya.'],
+            ['2. Import ulang', 'Import file ini lewat Pesanan > Import Excel. Kolom hijau boleh dibiarkan (diabaikan sistem), kecuali ID GAGAL jangan diubah.'],
+            ['3. Hasil', 'Baris yang berhasil otomatis berstatus "Sudah diperbaiki" di menu Import Gagal. Baris yang gagal lagi muncul sebagai baris gagal baru dengan alasan terbaru.'],
+            ['Hapus baris', 'Baris yang memang tidak perlu diimport (mis. pesanan uji/batal) hapus dari file, lalu tandai "Abaikan" di menu Import Gagal.'],
+            ['Aman diulang', 'Pesanan yang sudah tersimpan tidak akan dobel bila file ini diimport lebih dari sekali.'],
+        ]);
+
+        $this->referenceSheets($writer);
+        $writer->close();
+
+        return $path;
+    }
+
+    /**
+     * Sheet bantu untuk mengisi / memperbaiki: daftar toko aktif dan SKU aktif + SKU BigSeller-nya.
+     */
+    private function referenceSheets(XlsxWriter $writer): void
+    {
         Spreadsheet::addSheet($writer, 'Daftar Toko', [30, 24, 20], [
             ['NAMA TOKO', 'PEMILIK TOKO', 'CHANNEL'],
             ...Store::query()
@@ -101,10 +184,6 @@ class SalesOrderSpreadsheet
                 ->map(fn (ProductVariant $variant): array => [$variant->sku, $variant->name, $variant->skuAliases->pluck('alias')->implode(', ')])
                 ->all(),
         ]);
-
-        $writer->close();
-
-        return $path;
     }
 
     /**

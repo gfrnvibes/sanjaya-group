@@ -4,6 +4,7 @@ namespace App\Support;
 
 use App\Exceptions\BusinessRuleException;
 use BackedEnum;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 
 /**
@@ -23,6 +24,14 @@ class SpreadsheetRow
     public function text(string $key): string
     {
         return Spreadsheet::text($this->values[$key] ?? null);
+    }
+
+    /**
+     * Cap waktu sistem (kolom DIUBAH TERAKHIR); null bila kosong/tidak dikenali.
+     */
+    public function stamp(string $key): ?Carbon
+    {
+        return Spreadsheet::parseStamp($this->values[$key] ?? null);
     }
 
     public function filled(string $key): bool

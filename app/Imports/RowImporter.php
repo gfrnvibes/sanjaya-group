@@ -22,6 +22,7 @@ use Illuminate\Database\QueryException;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use OpenSpout\Common\Entity\Row;
 use OpenSpout\Writer\XLSX\Writer as XlsxWriter;
 use Throwable;
 
@@ -146,9 +147,50 @@ abstract class RowImporter
     }
 
     /**
+     * Label kolom yang diisi sistem (header hijau, tidak perlu diubah), mis. STOK SISTEM.
+     *
+     * @return list<string>
+     */
+    protected function systemColumns(): array
+    {
+        return [];
+    }
+
+    /**
+     * Baris data untuk export (urutan = columns()). Null = resource ini tidak punya export data.
+     *
+     * @return iterable<list<mixed>>|null
+     */
+    protected function exportRows(): ?iterable
+    {
+        return null;
+    }
+
+    public function hasExport(): bool
+    {
+        return $this->exportRows() !== null;
+    }
+
+    /**
      * Template kosong + sheet Petunjuk + sheet referensi. Mengembalikan path file sementara.
      */
     public function template(): string
+    {
+        return $this->workbook([]);
+    }
+
+    /**
+     * Export data dengan layout yang sama dengan template: diedit lalu diimpor ulang.
+     */
+    public function export(): string
+    {
+        return $this->workbook($this->exportRows() ?? []);
+    }
+
+    /**
+     * @param  iterable<list<mixed>>  $rows
+     */
+    private function workbook(iterable $rows): string
     {
         $path = Spreadsheet::tempPath('xlsx');
         $writer = new XlsxWriter;
@@ -161,7 +203,13 @@ abstract class RowImporter
             $sheet->setColumnWidth(max(12, min(36, mb_strlen($label) + 6)), $index + 1);
         }
 
-        $writer->addRow(Spreadsheet::headerRow(array_fill_keys(array_keys($this->columns()), true)));
+        $writer->addRow(Spreadsheet::headerRow(collect(array_keys($this->columns()))
+            ->mapWithKeys(fn (string $label): array => [$label => ! in_array($label, $this->systemColumns(), true)])
+            ->all()));
+
+        foreach ($rows as $row) {
+            $writer->addRow(Row::fromValues($row));
+        }
 
         Spreadsheet::addSheet($writer, 'Petunjuk', [26, 16, 100], [
             ['KOLOM', 'WAJIB', 'KETERANGAN'],
@@ -173,8 +221,8 @@ abstract class RowImporter
             ])->map(fn (string $note, int $index): array => [$index === 0 ? 'Catatan' : '', '', $note])->all(),
         ]);
 
-        foreach ($this->referenceSheets() as $name => [$widths, $rows]) {
-            Spreadsheet::addSheet($writer, $name, $widths, $rows);
+        foreach ($this->referenceSheets() as $name => [$widths, $sheetRows]) {
+            Spreadsheet::addSheet($writer, $name, $widths, $sheetRows);
         }
 
         $writer->close();

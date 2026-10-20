@@ -159,6 +159,29 @@ class Spreadsheet
     }
 
     /**
+     * Kolom DIUBAH TERAKHIR ditulis tanpa zona waktu, jadi export dan import harus memakai zona yang sama
+     * (jam lokal admin; database mengembalikan timestamptz dengan offset sesi, bukan zona aplikasi).
+     */
+    public const STAMP_TIMEZONE = 'Asia/Jakarta';
+
+    public static function stamp(?DateTimeInterface $at): ?string
+    {
+        return $at === null ? null : Carbon::instance($at)->setTimezone(self::STAMP_TIMEZONE)->format('Y-m-d H:i:s');
+    }
+
+    public static function parseStamp(mixed $value): ?Carbon
+    {
+        if ($value instanceof DateTimeInterface) {
+            // Sel tanggal Excel tidak punya zona: baca jam dindingnya di zona stamp.
+            return Carbon::parse($value->format('Y-m-d H:i:s'), self::STAMP_TIMEZONE);
+        }
+
+        $text = self::text($value);
+
+        return $text === '' ? null : rescue(fn (): Carbon => Carbon::parse($text, self::STAMP_TIMEZONE), null, false);
+    }
+
+    /**
      * Angka dari sel Excel atau teks seperti "Rp 52.492" / "52,492.50".
      */
     public static function parseNumber(mixed $value): ?float

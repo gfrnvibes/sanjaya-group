@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\SalesImportBatches\Tables;
 
 use App\Enums\ImportBatchStatus;
+use App\Enums\ImportFailureStatus;
 use App\Enums\SalesImportSource;
 use Filament\Actions\ViewAction;
 use Filament\Tables\Columns\TextColumn;
@@ -14,7 +15,10 @@ class SalesImportBatchesTable
     public static function configure(Table $table): Table
     {
         return $table
-            ->modifyQueryUsing(fn ($query) => $query->with('importer')->withCount('salesOrders'))
+            ->modifyQueryUsing(fn ($query) => $query->with('importer')->withCount([
+                'salesOrders',
+                'failures as open_failures_count' => fn ($failures) => $failures->where('status', ImportFailureStatus::Open),
+            ]))
             ->defaultSort('created_at', 'desc')
             ->columns([
                 TextColumn::make('created_at')
@@ -43,6 +47,10 @@ class SalesImportBatchesTable
                 TextColumn::make('error_count')
                     ->label('Error')
                     ->color(fn ($state): string => (int) $state > 0 ? 'danger' : 'gray'),
+                TextColumn::make('open_failures_count')
+                    ->label('Belum diperbaiki')
+                    ->badge()
+                    ->color(fn ($state): string => (int) $state > 0 ? 'danger' : 'success'),
                 TextColumn::make('importer.name')
                     ->label('Oleh')
                     ->placeholder('-'),

@@ -4,6 +4,7 @@ namespace App\Filament\Resources\SalesImportBatches;
 
 use App\Filament\Resources\SalesImportBatches\Pages\ListSalesImportBatches;
 use App\Filament\Resources\SalesImportBatches\Pages\ViewSalesImportBatch;
+use App\Filament\Resources\SalesImportBatches\RelationManagers\FailuresRelationManager;
 use App\Filament\Resources\SalesImportBatches\RelationManagers\SalesOrdersRelationManager;
 use App\Filament\Resources\SalesImportBatches\Schemas\SalesImportBatchInfolist;
 use App\Filament\Resources\SalesImportBatches\Tables\SalesImportBatchesTable;
@@ -49,6 +50,7 @@ class SalesImportBatchResource extends Resource
     public static function getRelations(): array
     {
         return [
+            FailuresRelationManager::class,
             SalesOrdersRelationManager::class,
         ];
     }

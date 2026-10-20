@@ -24,12 +24,7 @@ class CatalogActions
     {
         return array_values(array_filter([
             $withImport ? ActionGroup::make([
-                Action::make('downloadCatalogTemplate')
-                    ->label('Unduh Template Katalog')
-                    ->icon(Heroicon::OutlinedDocumentArrowDown)
-                    ->action(fn (CatalogSpreadsheet $spreadsheet): BinaryFileResponse => response()
-                        ->download($spreadsheet->template(), 'template-import-katalog.xlsx')
-                        ->deleteFileAfterSend()),
+                self::templateAction(),
                 self::importAction(),
             ])
                 ->label('Import')
@@ -49,7 +44,17 @@ class CatalogActions
         ]));
     }
 
-    private static function exportAction(string $name, string $label, string $format, ?string $sheet = null): Action
+    public static function templateAction(): Action
+    {
+        return Action::make('downloadCatalogTemplate')
+            ->label('Unduh Template Katalog')
+            ->icon(Heroicon::OutlinedDocumentArrowDown)
+            ->action(fn (CatalogSpreadsheet $spreadsheet): BinaryFileResponse => response()
+                ->download($spreadsheet->template(), 'template-import-katalog.xlsx')
+                ->deleteFileAfterSend());
+    }
+
+    public static function exportAction(string $name, string $label, string $format, ?string $sheet = null): Action
     {
         return Action::make($name)
             ->label($label)
@@ -61,7 +66,7 @@ class CatalogActions
                 ->deleteFileAfterSend());
     }
 
-    private static function importAction(): Action
+    public static function importAction(): Action
     {
         return Action::make('importCatalog')
             ->label('Import Katalog')

@@ -36,8 +36,8 @@ class CatalogSpreadsheet
     ];
 
     private const WIDTHS = [
-        'materials' => [16, 20, 14, 11, 14, 22, 12, 11, 16, 10, 8, 11, 20, 12, 13],
-        'products' => [16, 12, 24, 13, 13, 11, 14, 9, 16, 32, 9, 14, 8, 26, 11, 11, 11, 14, 14, 18],
+        'materials' => [16, 20, 14, 11, 14, 22, 12, 11, 16, 10, 8, 11, 20, 12, 13, 10, 19],
+        'products' => [16, 12, 24, 13, 13, 11, 14, 9, 16, 32, 9, 14, 8, 26, 10, 19, 11, 11, 11, 14, 14, 18],
         'boms' => [12, 9, 13, 24, 13, 16, 22, 15, 12, 16, 14],
         'purchases' => [12, 22, 15, 14, 12, 22, 10, 15, 14, 24],
     ];
@@ -61,7 +61,7 @@ class CatalogSpreadsheet
             ['', '', '', ''],
             ['Bahan', 'KODE JENIS BAHAN', 'Ya', 'Mis. DRILL. KATEGORI BAHAN kain / aksesoris (kosong = ditebak dari satuan); NAMA JENIS BAHAN default = kode.'],
             ['Bahan', 'KODE / NAMA WARNA', '-', 'Warna bahan. Kode kosong = dibuat dari nama warna.'],
-            ['Bahan', 'KODE BAHAN', '-', 'Kosong = otomatis "JENIS - WARNA". Bahan dicocokkan lewat kode, atau jenis + warna.'],
+            ['Bahan', 'KODE BAHAN', '-', 'Kosong = otomatis "JENIS - WARNA". Bahan dicocokkan lewat ID BAHAN, kode, atau jenis + warna. Ganti kode: ubah KODE BAHAN, biarkan ID BAHAN.'],
             ['Bahan', 'SATUAN DASAR', '-', 'cm / m / pcs / gr. Kosong untuk bahan baru = cm (kain) / pcs (aksesoris).'],
             ['Bahan', 'SATUAN BELI, ISI PER SATUAN BELI', '-', 'Mis. roll, 3000 (1 roll = 3000 cm). Kosong untuk bahan baru = isi 1 (cek!).'],
             ['Bahan', 'STOK AWAL, HARGA PER SATUAN DASAR', '-', 'Saldo awal (satuan dasar). Hanya sekali per bahan per gudang; impor ulang dilewati.'],
@@ -70,10 +70,12 @@ class CatalogSpreadsheet
             ['Produk', 'KATEGORI, KODE MODEL, NAMA MODEL', 'Kode: Ya', 'NAMA MODEL kosong = dari NAMA VARIAN tanpa warna/ukuran; KATEGORI kosong = Umum. JENIS PRODUK: produksi / beli_jadi / jasa.'],
             ['Produk', 'MARGIN MODEL % / MARGIN VARIAN %', '-', 'Mis. 30 atau 30%. Kosong = ikut default.'],
             ['Produk', 'KODE / NAMA WARNA, UKURAN', '-', 'Warna & ukuran varian.'],
-            ['Produk', 'SKU VARIAN', 'Ya', 'Kunci varian. NAMA VARIAN kosong = "Model Warna Ukuran".'],
+            ['Produk', 'SKU VARIAN', 'Ya', 'Kunci varian. NAMA VARIAN kosong = "Model Warna Ukuran". Ganti SKU: ubah SKU VARIAN, biarkan ID VARIAN.'],
             ['Produk', 'SKU BIG SELLER', '-', 'Boleh lebih dari satu, pisahkan dengan koma. Hanya ditambahkan, tidak dihapus.'],
             ['Produk', 'HPP & HARGA RESELLER', 'Otomatis', 'Tidak diisi: HPP dihitung dari resep x harga beli bahan, harga dasar = HPP x (1 + margin), berlaku mulai tanggal resep/pembelian.'],
             ['', '', '', 'Di file export kolom ini berheader hijau (hanya info) dan diabaikan saat impor ulang.'],
+            ['Bahan & Produk', 'ID BAHAN / ID VARIAN, DIUBAH TERAKHIR', 'Jangan diubah', 'Kolom hijau dari sistem. Kosong = data baru. Bila data diubah di sistem setelah file di-export, isi file tetap dipakai dan muncul peringatan.'],
+            ['Umum', 'Hapus baris', '-', 'Menghapus baris di Excel TIDAK menghapus data. Untuk menghentikan produk/bahan, isi AKTIF = Tidak.'],
             ['', '', '', ''],
             ['Resep BOM', 'KODE MODEL, UKURAN, BERLAKU MULAI', 'Model & tgl: Ya', '1 baris = 1 komponen. Baris dengan model + ukuran + tanggal sama = 1 resep. UKURAN kosong = semua ukuran.'],
             ['Resep BOM', 'JENIS BARIS', 'Ya', 'bahan / ongkos. Resep yang sudah ada diganti seluruh komponennya.'],
@@ -129,6 +131,7 @@ class CatalogSpreadsheet
     {
         return Spreadsheet::headerRow([
             ...array_fill_keys(array_keys(CatalogImporter::SHEETS[$type]['headers']), true),
+            ...array_fill_keys(array_keys(CatalogImporter::SHEETS[$type]['system'] ?? []), false),
             ...($withAuto ? array_fill_keys(self::AUTO_COLUMNS[$type] ?? [], false) : []),
         ]);
     }
@@ -173,6 +176,7 @@ class CatalogSpreadsheet
                     $m->materialType->code, $m->materialType->name, $m->materialType->kind->value,
                     $m->color?->code, $m->color?->name, $m->code, $m->base_uom->value, $m->pack_uom,
                     (float) $m->qty_per_pack, (float) $m->min_stock, $yesNo($m->is_active), null, null, null, null,
+                    $m->id, Spreadsheet::stamp($m->updated_at),
                 ]),
             'products' => ProductVariant::query()
                 ->with(['model.category', 'color', 'size', 'skuAliases'])
@@ -188,6 +192,7 @@ class CatalogSpreadsheet
                         $v->model->category?->name, $v->model->code, $v->model->name, $v->model->kind->value, $percent($v->model->default_margin_pct),
                         $v->color?->code, $v->color?->name, $v->size?->code, $v->sku, $v->name, $v->min_stock, $percent($v->margin_pct),
                         $yesNo($v->is_active), $v->skuAliases->pluck('alias')->implode(', '),
+                        $v->id, Spreadsheet::stamp($v->updated_at),
                         $cost ? (float) $cost->material_cost : null, $cost ? (float) $cost->labor_cost : null, $cost ? (float) $cost->total_cost : null,
                         $percent($price?->margin_pct), $price ? (float) $price->base_price : null, $price?->effective_from->toDateString(),
                     ];

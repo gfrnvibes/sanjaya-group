@@ -6,6 +6,7 @@ use App\Enums\ChannelKind;
 use App\Exceptions\BusinessRuleException;
 use App\Models\Channel;
 use App\Models\Owner;
+use App\Models\OwnerTierHistory;
 use App\Models\PriceTier;
 use App\Models\Reseller;
 use App\Models\Store;
@@ -13,19 +14,24 @@ use App\Support\Spreadsheet;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\QueryException;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use OpenSpout\Common\Entity\Row;
 use OpenSpout\Writer\XLSX\Writer as XlsxWriter;
 
 /**
- * Impor 1 file untuk grup Reseller & Toko: 1 baris = 1 toko.
- * Pemilik (kode), reseller (nama), dan channel (kode) yang sudah ada dipakai ulang tanpa diubah;
- * yang belum ada dibuat. Riwayat tier pemilik ditambahkan bila kolom TIER diisi.
- * Tiap baris disimpan terpisah: baris valid tersimpan, baris error dilaporkan.
+ * Workbook RESELLER & TOKO (1 baris = 1 toko): export -> edit di Excel -> import ulang.
+ *
+ * - Baris dengan ID TOKO / nama toko yang sudah ada = DIPERBARUI dari sel yang terisi (ganti nama lewat ID).
+ * - Baris baru (ID kosong) = dibuat; pemilik, reseller, channel, tier yang belum ada ikut dibuat.
+ * - Pindah toko ke reseller lain / reseller ke pemilik lain TIDAK lewat Excel (memengaruhi tagihan).
+ * - Baris yang dihapus di Excel tidak menghapus data; nonaktifkan dengan AKTIF = Tidak.
+ * - Bila data diubah di sistem setelah file di-export (kolom DIUBAH TERAKHIR), isi file tetap dipakai + peringatan.
  */
 class StoreImporter
 {
-    /** LABEL HEADER => kunci; urutan = urutan kolom template. */
+    /** Kolom input (header merah); urutan = urutan kolom file. */
     public const COLUMNS = [
         'KODE PEMILIK' => 'owner_code',
         'NAMA PEMILIK' => 'owner_name',
@@ -43,6 +49,13 @@ class StoreImporter
         'AKTIF' => 'is_active',
     ];
 
+    /** Kolom sistem (header hijau, jangan diubah): kunci untuk ganti nama & deteksi perubahan. */
+    public const SYSTEM_COLUMNS = [
+        'ID TOKO' => 'store_id',
+        'ID RESELLER' => 'reseller_id',
+        'DIUBAH TERAKHIR' => 'exported_at',
+    ];
+
     private const REQUIRED = ['owner_code', 'reseller', 'store', 'channel_code'];
 
     /** Tier yang belum terdaftar dibuat dengan nama & penyesuaian ini (0.30 = harga dasar +30%). */
@@ -50,41 +63,51 @@ class StoreImporter
 
     public const NEW_TIER_ADJUSTMENT = 0.30;
 
+    private const WIDTHS = [14, 22, 16, 10, 18, 26, 14, 16, 30, 14, 16, 16, 20, 8, 10, 12, 19];
+
     /** @var list<string> peringatan baris yang sedang diproses */
     private array $pendingWarnings = [];
 
+    /** @var array<string, array{created: int, updated: int, skipped: int}> */
+    private array $pending = [];
+
     /**
-     * @return array{rows: int, created: array{owners: int, resellers: int, channels: int, price_tiers: int, tiers: int, stores: int}, errors: list<string>, warnings: list<string>}
+     * @return array{rows: int, stats: array<string, array{created: int, updated: int, skipped: int}>, errors: list<string>, warnings: list<string>}
      */
     public function import(string $path, string $fileName): array
     {
-        $created = ['owners' => 0, 'resellers' => 0, 'channels' => 0, 'price_tiers' => 0, 'tiers' => 0, 'stores' => 0];
+        $stats = [];
         $errors = [];
         $warnings = [];
 
         try {
-            $lines = Spreadsheet::read($path, $fileName, self::COLUMNS, self::REQUIRED,
-                'Header tidak ditemukan. Pastikan ada kolom KODE PEMILIK, NAMA RESELLER, NAMA TOKO, dan KODE CHANNEL (gunakan template).');
+            $lines = Spreadsheet::read($path, $fileName, [...self::COLUMNS, ...self::SYSTEM_COLUMNS], self::REQUIRED,
+                'Header tidak ditemukan. Pastikan ada kolom KODE PEMILIK, NAMA RESELLER, NAMA TOKO, dan KODE CHANNEL (gunakan template/export).');
         } catch (BusinessRuleException $exception) {
-            return ['rows' => 0, 'created' => $created, 'errors' => [$exception->getMessage()], 'warnings' => []];
+            return ['rows' => 0, 'stats' => [], 'errors' => [$exception->getMessage()], 'warnings' => []];
         }
 
         foreach ($lines as $line) {
             $this->pendingWarnings = [];
+            $this->pending = [];
 
             try {
                 $row = $this->validate($line['values']);
-                $rowCreated = DB::transaction(fn (): array => $this->storeRow($row));
+                DB::transaction(fn () => $this->storeRow($row));
 
-                foreach ($rowCreated as $key => $count) {
-                    $created[$key] += $count;
+                foreach ($this->pending as $label => $counts) {
+                    $stats[$label] ??= ['created' => 0, 'updated' => 0, 'skipped' => 0];
+
+                    foreach ($counts as $kind => $count) {
+                        $stats[$label][$kind] += $count;
+                    }
                 }
 
                 foreach ($this->pendingWarnings as $warning) {
                     $warnings[] = "Baris {$line['line']}: {$warning}";
                 }
             } catch (BusinessRuleException $exception) {
-                $errors[] = "Baris {$line['line']}: {$exception->getMessage()}";
+                $errors[] = "Baris {$line['line']}: ".rtrim($exception->getMessage(), '.').'.';
             } catch (QueryException $exception) {
                 $errors[] = "Baris {$line['line']}: gagal disimpan (".Str::limit(strtok($exception->getMessage(), "\n") ?: 'kesalahan database', 160).').';
             }
@@ -94,52 +117,67 @@ class StoreImporter
             $errors[] = 'Tidak ada baris data yang bisa diimpor.';
         }
 
-        return ['rows' => count($lines), 'created' => $created, 'errors' => $errors, 'warnings' => $warnings];
+        return ['rows' => count($lines), 'stats' => $stats, 'errors' => $errors, 'warnings' => array_values(array_unique($warnings))];
     }
 
     /**
-     * Template kosong + petunjuk + daftar referensi. Mengembalikan path file sementara.
+     * Template kosong (+ petunjuk & daftar referensi). Mengembalikan path file sementara.
      */
     public function template(): string
+    {
+        return $this->workbook(withData: false);
+    }
+
+    /**
+     * Export semua toko dengan layout yang sama dengan template: diedit lalu diimpor ulang.
+     */
+    public function export(): string
+    {
+        return $this->workbook(withData: true);
+    }
+
+    private function workbook(bool $withData): string
     {
         $path = Spreadsheet::tempPath('xlsx');
         $writer = new XlsxWriter;
         $writer->openToFile($path);
 
         $sheet = $writer->getCurrentSheet();
-        $sheet->setName('Input Toko');
-        foreach ([14, 22, 16, 10, 18, 26, 14, 16, 30, 14, 16, 16, 20, 8] as $index => $width) {
+        $sheet->setName('Toko');
+        foreach (self::WIDTHS as $index => $width) {
             $sheet->setColumnWidth($width, $index + 1);
         }
-        $writer->addRow(Spreadsheet::headerRow(array_fill_keys(array_keys(self::COLUMNS), true)));
 
-        Spreadsheet::addSheet($writer, 'Petunjuk', [24, 12, 100], [
+        $writer->addRow(Spreadsheet::headerRow([
+            ...array_fill_keys(array_keys(self::COLUMNS), true),
+            ...array_fill_keys(array_keys(self::SYSTEM_COLUMNS), false),
+        ]));
+
+        if ($withData) {
+            foreach ($this->exportRows() as $values) {
+                $writer->addRow(Row::fromValues($values));
+            }
+        }
+
+        Spreadsheet::addSheet($writer, 'Petunjuk', [24, 14, 100], [
             ['KOLOM', 'WAJIB', 'KETERANGAN'],
-            ['KODE PEMILIK', 'Ya', 'Kode unik pemilik. Bila sudah ada, pemilik dipakai ulang (data pemilik tidak diubah).'],
-            ['NAMA PEMILIK', 'Pemilik baru', 'Nama pemilik. Wajib bila KODE PEMILIK belum terdaftar.'],
-            ['NO HP PEMILIK', '-', 'Hanya dipakai saat pemilik baru dibuat.'],
-            ['TIER', '-', 'Kode/nama tier harga (lihat sheet Daftar Tier). Ditambahkan ke riwayat tier pemilik. Tier yang belum ada dibuat otomatis dengan nama "Belum diatur" dan +30% dari harga dasar.'],
+            ['KODE PEMILIK', 'Ya', 'Kode unik pemilik (kunci pemilik). Pemilik yang sudah ada: nama & no HP diperbarui dari sel yang terisi.'],
+            ['NAMA PEMILIK', 'Pemilik baru', 'Wajib bila KODE PEMILIK belum terdaftar.'],
+            ['NO HP PEMILIK', '-', 'Format kolom sebagai teks agar angka 0 di depan tidak hilang.'],
+            ['TIER', '-', 'Kode/nama tier harga (sheet Daftar Tier). Ditambahkan ke riwayat tier pemilik. Tier baru dibuat otomatis: nama "Belum diatur", +30% dari harga dasar.'],
             ['TIER BERLAKU MULAI', 'Bila TIER diisi', 'Tanggal tier mulai berlaku (YYYY-MM-DD / DD/MM/YYYY).'],
-            ['NAMA RESELLER', 'Ya', 'Nama reseller/brand (unik). Bila sudah ada, harus milik pemilik yang sama.'],
-            ['SALDO AWAL', '-', 'Saldo tagihan awal reseller. Hanya dipakai saat reseller baru dibuat.'],
-            ['TGL SALDO AWAL', '-', 'Tanggal saldo awal.'],
-            ['NAMA TOKO', 'Ya', 'Nama toko (unik), mis. "ARR SANJAYA Shopee". Toko yang sudah ada akan ditolak.'],
-            ['KODE CHANNEL', 'Ya', 'Kode channel, mis. SHOPEE / TIKTOK / WA. Bila belum ada, channel baru dibuat.'],
-            ['NAMA CHANNEL', '-', 'Nama channel baru (default = kode).'],
-            ['JENIS CHANNEL', 'Channel baru', 'marketplace / website / chat / offline / other.'],
+            ['NAMA RESELLER', 'Ya', 'Nama reseller/brand (unik). Ganti nama: ubah nama, biarkan ID RESELLER.'],
+            ['SALDO AWAL, TGL SALDO AWAL', '-', 'Saldo tagihan awal reseller. Mengubah saldo awal ikut mengubah piutang reseller.'],
+            ['NAMA TOKO', 'Ya', 'Nama toko (unik). Ganti nama: ubah nama, biarkan ID TOKO.'],
+            ['KODE CHANNEL', 'Ya', 'Kode channel, mis. SHOPEE / TIKTOK / WA. Channel baru dibuat otomatis (butuh JENIS CHANNEL).'],
+            ['NAMA CHANNEL, JENIS CHANNEL', 'Channel baru', 'Jenis: marketplace / website / chat / offline / other.'],
             ['ID TOKO MARKETPLACE', '-', 'ID toko di BigSeller / marketplace.'],
-            ['AKTIF', '-', 'Ya / Tidak. Default Ya.'],
+            ['AKTIF', '-', 'Ya / Tidak. Toko tidak dihapus lewat Excel; isi Tidak untuk menonaktifkan.'],
+            ['ID TOKO, ID RESELLER', 'Jangan diubah', 'Kolom hijau dari sistem. Kosong = data baru.'],
+            ['DIUBAH TERAKHIR', 'Jangan diubah', 'Bila data diubah di sistem setelah file ini di-export, isi file tetap dipakai dan muncul peringatan.'],
             ['', '', ''],
-            ['Catatan', '', '1 baris = 1 toko. Pemilik & reseller yang sama cukup ditulis ulang di tiap baris tokonya.'],
-            ['', '', 'Baris yang valid tetap disimpan; baris error dilaporkan setelah impor.'],
-            ['Contoh', '', 'ARF | ARIFIN | 08123456789 | T1 | 2026-10-01 | ARR SANJAYA | 0 | | ARR SANJAYA Shopee | SHOPEE | Shopee | marketplace | | Ya'],
-        ]);
-
-        Spreadsheet::addSheet($writer, 'Daftar Pemilik', [16, 30, 40], [
-            ['KODE PEMILIK', 'NAMA PEMILIK', 'RESELLER'],
-            ...Owner::query()->with('resellers')->orderBy('code')->get()
-                ->map(fn (Owner $owner): array => [$owner->code, $owner->name, $owner->resellers->pluck('name')->implode(', ')])
-                ->all(),
+            ['Alur', '', 'Export -> edit di Excel -> Import. Baris valid disimpan, baris error dilaporkan. Menghapus baris di Excel TIDAK menghapus data.'],
+            ['', '', 'Pindah toko ke reseller lain atau reseller ke pemilik lain tidak bisa lewat Excel (memengaruhi tagihan) — ubah lewat menu Toko/Reseller.'],
         ]);
 
         Spreadsheet::addSheet($writer, 'Daftar Channel', [16, 24, 16], [
@@ -162,7 +200,45 @@ class StoreImporter
     }
 
     /**
-     * Validasi format satu baris (tanpa menyentuh database kecuali master tier).
+     * @return list<list<mixed>>
+     */
+    private function exportRows(): array
+    {
+        $tiers = OwnerTierHistory::query()
+            ->with('priceTier')
+            ->whereDate('effective_from', '<=', today())
+            ->orderByDesc('effective_from')
+            ->get()
+            ->unique('owner_id')
+            ->keyBy('owner_id');
+
+        return Store::query()
+            ->with(['reseller.owner', 'channel'])
+            ->join('resellers', 'resellers.id', '=', 'stores.reseller_id')
+            ->join('owners', 'owners.id', '=', 'resellers.owner_id')
+            ->orderBy('owners.code')->orderBy('resellers.name')->orderBy('stores.name')
+            ->select('stores.*')
+            ->get()
+            ->map(function (Store $store) use ($tiers): array {
+                $reseller = $store->reseller;
+                $owner = $reseller->owner;
+                $tier = $tiers->get($owner->id);
+                $changed = collect([$store->updated_at, $reseller->updated_at, $owner->updated_at])->filter()->max();
+
+                return [
+                    $owner->code, $owner->name, $owner->phone,
+                    $tier?->priceTier?->code, $tier?->effective_from?->toDateString(),
+                    $reseller->name, (float) $reseller->opening_balance, $reseller->opening_balance_date?->toDateString(),
+                    $store->name, $store->channel?->code, $store->channel?->name, $store->channel?->kind?->value,
+                    $store->external_ref, $store->is_active ? 'Ya' : 'Tidak',
+                    $store->id, $reseller->id, Spreadsheet::stamp($changed),
+                ];
+            })
+            ->all();
+    }
+
+    /**
+     * Validasi format satu baris (tanpa menyentuh database).
      *
      * @param  array<string, mixed>  $input
      * @return array<string, mixed>
@@ -181,12 +257,15 @@ class StoreImporter
             'channel_code' => Str::upper($text('channel_code')),
             'channel_name' => $text('channel_name'),
             'external_ref' => $text('external_ref') ?: null,
+            'store_id' => $text('store_id') !== '' ? (int) $text('store_id') : null,
+            'reseller_id' => $text('reseller_id') !== '' ? (int) $text('reseller_id') : null,
+            'exported_at' => null,
             'tier' => null,
             'tier_from' => null,
-            'opening_balance' => 0,
+            'opening_balance' => null,
             'opening_balance_date' => null,
             'channel_kind' => null,
-            'is_active' => true,
+            'is_active' => null,
         ];
 
         foreach (['owner_code' => 'KODE PEMILIK', 'reseller' => 'NAMA RESELLER', 'store' => 'NAMA TOKO', 'channel_code' => 'KODE CHANNEL'] as $key => $label) {
@@ -204,6 +283,8 @@ class StoreImporter
                 $errors[] = "{$label} maksimal {$max} karakter";
             }
         }
+
+        $row['exported_at'] = Spreadsheet::parseStamp($input['exported_at'] ?? null);
 
         if ($text('tier') !== '') {
             $row['tier'] = $text('tier');
@@ -261,93 +342,212 @@ class StoreImporter
      * Simpan satu baris (dipanggil di dalam transaksi).
      *
      * @param  array<string, mixed>  $row
-     * @return array{owners: int, resellers: int, channels: int, price_tiers: int, tiers: int, stores: int}
      */
-    private function storeRow(array $row): array
+    private function storeRow(array $row): void
     {
-        $created = ['owners' => 0, 'resellers' => 0, 'channels' => 0, 'price_tiers' => 0, 'tiers' => 0, 'stores' => 0];
+        $owner = $this->owner($row);
+        $this->tier($owner, $row);
+        $channel = $this->channel($row);
+        $reseller = $this->reseller($owner, $row);
+        $store = $row['store_id']
+            ? Store::withTrashed()->find($row['store_id']) ?? throw new BusinessRuleException("ID TOKO {$row['store_id']} tidak ditemukan; kosongkan ID untuk toko baru")
+            : $this->findCi(Store::withTrashed(), 'name', $row['store']);
 
-        if ($this->findByName(Store::withTrashed(), 'name', $row['store'])) {
-            throw new BusinessRuleException("toko \"{$row['store']}\" sudah ada.");
+        if ($store?->trashed()) {
+            throw new BusinessRuleException("toko \"{$store->name}\" sudah dihapus");
         }
 
-        $owner = $this->findByName(Owner::withTrashed(), 'code', $row['owner_code']);
-        if ($owner?->trashed()) {
-            throw new BusinessRuleException("pemilik {$row['owner_code']} sudah dihapus.");
-        }
-        if ($owner === null) {
-            if ($row['owner_name'] === '') {
-                throw new BusinessRuleException("pemilik {$row['owner_code']} belum terdaftar, NAMA PEMILIK wajib diisi.");
-            }
-
-            $owner = Owner::create(['code' => $row['owner_code'], 'name' => $row['owner_name'], 'phone' => $row['owner_phone']]);
-            $created['owners']++;
-        }
-
-        if ($row['tier'] !== null) {
-            $tier = $this->findTier($row['tier']);
-
-            if ($tier === null) {
-                $tier = PriceTier::create([
-                    'code' => Str::upper($row['tier']),
-                    'name' => self::NEW_TIER_NAME,
-                    'adjustment_pct' => self::NEW_TIER_ADJUSTMENT,
-                ]);
-                $created['price_tiers']++;
-                $this->pendingWarnings[] = "tier {$tier->code} dibuat otomatis (nama \"".self::NEW_TIER_NAME.'", +'.(self::NEW_TIER_ADJUSTMENT * 100).'% dari harga dasar) — atur di menu Tier Harga.';
-            }
-
-            $history = $owner->tierHistories()->whereDate('effective_from', $row['tier_from'])->first();
-
-            if ($history === null) {
-                $owner->tierHistories()->create(['price_tier_id' => $tier->id, 'effective_from' => $row['tier_from'], 'note' => 'Impor toko']);
-                $created['tiers']++;
-            } elseif ($history->price_tier_id !== $tier->id) {
-                throw new BusinessRuleException("pemilik {$owner->code} sudah punya tier lain yang berlaku mulai {$row['tier_from']}.");
-            }
-        }
-
-        $channel = $this->findByName(Channel::query(), 'code', $row['channel_code']);
-        if ($channel === null) {
-            if ($row['channel_kind'] === null) {
-                throw new BusinessRuleException("channel {$row['channel_code']} belum terdaftar, JENIS CHANNEL wajib diisi.");
-            }
-
-            $channel = Channel::create([
-                'code' => $row['channel_code'],
-                'name' => $row['channel_name'] ?: $row['channel_code'],
-                'kind' => $row['channel_kind'],
+        if ($store === null) {
+            Store::create([
+                'reseller_id' => $reseller->id,
+                'channel_id' => $channel->id,
+                'name' => $row['store'],
+                'external_ref' => $row['external_ref'],
+                'is_active' => $row['is_active'] ?? true,
             ]);
-            $created['channels']++;
+            $this->bump('Toko', 'created');
+
+            return;
         }
 
-        $reseller = $this->findByName(Reseller::withTrashed(), 'name', $row['reseller']);
-        if ($reseller?->trashed()) {
-            throw new BusinessRuleException("reseller \"{$row['reseller']}\" sudah dihapus.");
-        }
-        if ($reseller !== null && $reseller->owner_id !== $owner->id) {
-            throw new BusinessRuleException("reseller \"{$row['reseller']}\" sudah terdaftar atas pemilik lain.");
-        }
-        if ($reseller === null) {
-            $reseller = Reseller::create([
-                'owner_id' => $owner->id,
-                'name' => $row['reseller'],
-                'opening_balance' => $row['opening_balance'],
-                'opening_balance_date' => $row['opening_balance_date'],
-            ]);
-            $created['resellers']++;
+        if ($store->reseller_id !== $reseller->id) {
+            throw new BusinessRuleException("toko \"{$store->name}\" milik reseller lain; pindah reseller tidak bisa lewat Excel (ubah di menu Toko)");
         }
 
-        Store::create([
-            'reseller_id' => $reseller->id,
-            'channel_id' => $channel->id,
+        $this->warnIfChangedSinceExport($store, $row, "toko \"{$store->name}\"");
+        $this->ensureUniqueName(Store::withTrashed(), $row['store'], $store, 'toko');
+
+        $store->fill(array_filter([
             'name' => $row['store'],
+            'channel_id' => $channel->id,
             'external_ref' => $row['external_ref'],
             'is_active' => $row['is_active'],
-        ]);
-        $created['stores']++;
+        ], fn ($value): bool => $value !== null));
 
-        return $created;
+        $this->saveIfDirty($store, 'Toko');
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     */
+    private function owner(array $row): Owner
+    {
+        $owner = $this->findCi(Owner::withTrashed(), 'code', $row['owner_code']);
+
+        if ($owner?->trashed()) {
+            throw new BusinessRuleException("pemilik {$row['owner_code']} sudah dihapus");
+        }
+
+        if ($owner === null) {
+            if ($row['owner_name'] === '') {
+                throw new BusinessRuleException("pemilik {$row['owner_code']} belum terdaftar, NAMA PEMILIK wajib diisi");
+            }
+
+            $this->bump('Pemilik', 'created');
+
+            return Owner::create(['code' => $row['owner_code'], 'name' => $row['owner_name'], 'phone' => $row['owner_phone']]);
+        }
+
+        $this->warnIfChangedSinceExport($owner, $row, "pemilik {$owner->code}");
+        $owner->fill(array_filter(['name' => $row['owner_name'] ?: null, 'phone' => $row['owner_phone']], fn ($value): bool => $value !== null));
+        $this->saveIfDirty($owner, 'Pemilik', countSkipped: false);
+
+        return $owner;
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     */
+    private function tier(Owner $owner, array $row): void
+    {
+        if ($row['tier'] === null) {
+            return;
+        }
+
+        $tier = $this->findCi(PriceTier::query(), 'code', $row['tier']) ?? $this->findCi(PriceTier::query(), 'name', $row['tier']);
+
+        if ($tier === null) {
+            $tier = PriceTier::create(['code' => Str::upper($row['tier']), 'name' => self::NEW_TIER_NAME, 'adjustment_pct' => self::NEW_TIER_ADJUSTMENT]);
+            $this->bump('Tier Harga', 'created');
+            $this->pendingWarnings[] = "tier {$tier->code} dibuat otomatis (nama \"".self::NEW_TIER_NAME.'", +'.(self::NEW_TIER_ADJUSTMENT * 100).'% dari harga dasar) — atur di menu Tier Harga.';
+        }
+
+        $history = $owner->tierHistories()->whereDate('effective_from', $row['tier_from'])->first();
+
+        if ($history === null) {
+            $owner->tierHistories()->create(['price_tier_id' => $tier->id, 'effective_from' => $row['tier_from'], 'note' => 'Impor toko']);
+            $this->bump('Riwayat Tier', 'created');
+        } elseif ($history->price_tier_id !== $tier->id) {
+            $history->update(['price_tier_id' => $tier->id]);
+            $this->bump('Riwayat Tier', 'updated');
+            $this->pendingWarnings[] = "tier pemilik {$owner->code} mulai {$row['tier_from']} diganti ke {$tier->code}; pesanan baru memakai tier ini.";
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     */
+    private function channel(array $row): Channel
+    {
+        $channel = $this->findCi(Channel::query(), 'code', $row['channel_code']);
+
+        if ($channel !== null) {
+            return $channel;
+        }
+
+        if ($row['channel_kind'] === null) {
+            throw new BusinessRuleException("channel {$row['channel_code']} belum terdaftar, JENIS CHANNEL wajib diisi");
+        }
+
+        $this->bump('Channel', 'created');
+
+        return Channel::create(['code' => $row['channel_code'], 'name' => $row['channel_name'] ?: $row['channel_code'], 'kind' => $row['channel_kind']]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     */
+    private function reseller(Owner $owner, array $row): Reseller
+    {
+        $reseller = $row['reseller_id']
+            ? Reseller::withTrashed()->find($row['reseller_id']) ?? throw new BusinessRuleException("ID RESELLER {$row['reseller_id']} tidak ditemukan; kosongkan ID untuk reseller baru")
+            : $this->findCi(Reseller::withTrashed(), 'name', $row['reseller']);
+
+        if ($reseller?->trashed()) {
+            throw new BusinessRuleException("reseller \"{$reseller->name}\" sudah dihapus");
+        }
+
+        if ($reseller === null) {
+            $this->bump('Reseller', 'created');
+
+            return Reseller::create([
+                'owner_id' => $owner->id,
+                'name' => $row['reseller'],
+                'opening_balance' => $row['opening_balance'] ?? 0,
+                'opening_balance_date' => $row['opening_balance_date'],
+            ]);
+        }
+
+        if ($reseller->owner_id !== $owner->id) {
+            throw new BusinessRuleException("reseller \"{$reseller->name}\" milik pemilik lain; pindah pemilik tidak bisa lewat Excel (ubah di menu Reseller)");
+        }
+
+        $this->warnIfChangedSinceExport($reseller, $row, "reseller \"{$reseller->name}\"");
+        $this->ensureUniqueName(Reseller::withTrashed(), $row['reseller'], $reseller, 'reseller');
+
+        $reseller->fill(array_filter([
+            'name' => $row['reseller'],
+            'opening_balance' => $row['opening_balance'],
+            'opening_balance_date' => $row['opening_balance_date'],
+        ], fn ($value): bool => $value !== null));
+
+        if ($reseller->isDirty('opening_balance')) {
+            $this->pendingWarnings[] = "saldo awal reseller \"{$reseller->name}\" diubah; piutang reseller ikut berubah.";
+        }
+
+        $this->saveIfDirty($reseller, 'Reseller', countSkipped: false);
+
+        return $reseller;
+    }
+
+    /**
+     * Nama baru tidak boleh sama dengan data lain (ganti nama lewat ID).
+     *
+     * @param  Builder<Model>  $query
+     */
+    private function ensureUniqueName(Builder $query, string $name, Model $current, string $label): void
+    {
+        $other = $this->findCi($query, 'name', $name);
+
+        if ($other !== null && $other->getKey() !== $current->getKey()) {
+            throw new BusinessRuleException("nama {$label} \"{$name}\" sudah dipakai {$label} lain");
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     */
+    private function warnIfChangedSinceExport(Model $model, array $row, string $label): void
+    {
+        if ($row['exported_at'] instanceof Carbon && $model->updated_at?->gt($row['exported_at']->copy()->addSecond())) {
+            $this->pendingWarnings[] = "{$label} diubah di sistem setelah file di-export ({$model->updated_at->format('d/m/Y H:i')}); isi file dipakai.";
+        }
+    }
+
+    private function saveIfDirty(Model $model, string $label, bool $countSkipped = true): void
+    {
+        if ($model->isDirty()) {
+            $model->save();
+            $this->bump($label, 'updated');
+        } elseif ($countSkipped) {
+            $this->bump($label, 'skipped');
+        }
+    }
+
+    private function bump(string $label, string $kind): void
+    {
+        $this->pending[$label] ??= ['created' => 0, 'updated' => 0, 'skipped' => 0];
+        $this->pending[$label][$kind]++;
     }
 
     /**
@@ -358,18 +558,9 @@ class StoreImporter
      * @param  Builder<TModel>  $query
      * @return TModel|null
      */
-    private function findByName(Builder $query, string $column, string $value): ?Model
+    private function findCi(Builder $query, string $column, string $value): ?Model
     {
         return $query->whereRaw("lower({$column}) = ?", [Str::lower($value)])->first();
-    }
-
-    /**
-     * Tier lewat kode (diutamakan) atau nama, tanpa membedakan huruf besar/kecil.
-     */
-    private function findTier(string $value): ?PriceTier
-    {
-        return $this->findByName(PriceTier::query(), 'code', $value)
-            ?? $this->findByName(PriceTier::query(), 'name', $value);
     }
 
     private function parseChannelKind(string $value): ?ChannelKind

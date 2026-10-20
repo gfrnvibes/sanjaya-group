@@ -68,6 +68,8 @@ class CatalogImporter
                 'GUDANG' => 'warehouse',
                 'TGL STOK AWAL' => 'opening_date',
             ],
+            // Kolom sistem (header hijau, jangan diubah): ID untuk ganti kode, DIUBAH TERAKHIR untuk deteksi perubahan.
+            'system' => ['ID BAHAN' => 'material_id', 'DIUBAH TERAKHIR' => 'exported_at'],
             'required' => ['type_code', 'base_uom'],
         ],
         'products' => [
@@ -88,6 +90,7 @@ class CatalogImporter
                 'AKTIF' => 'is_active',
                 'SKU BIG SELLER' => 'aliases',
             ],
+            'system' => ['ID VARIAN' => 'variant_id', 'DIUBAH TERAKHIR' => 'exported_at'],
             'required' => ['model_code', 'sku'],
         ],
         'boms' => [
@@ -168,7 +171,7 @@ class CatalogImporter
 
         try {
             $sheets = Spreadsheet::readSheets($path, $fileName, collect(self::SHEETS)
-                ->map(fn (array $sheet): array => ['headers' => $sheet['headers'], 'required' => $sheet['required']])
+                ->map(fn (array $sheet): array => ['headers' => [...$sheet['headers'], ...($sheet['system'] ?? [])], 'required' => $sheet['required']])
                 ->all());
         } catch (BusinessRuleException $exception) {
             return ['rows' => 0, 'sheets' => [], 'stats' => [], 'errors' => [$exception->getMessage()], 'warnings' => []];
@@ -239,13 +242,29 @@ class CatalogImporter
         $color = $this->color($v->text('color_code'), $v->text('color_name'));
 
         $code = $v->text('code');
-        $material = $code !== ''
-            ? $this->findCi(Material::query(), 'code', $code)
-            : Material::query()->where('material_type_id', $type->id)->where('color_id', $color?->id)->first();
+        $material = match (true) {
+            $v->filled('material_id') => Material::query()->find((int) $v->text('material_id'))
+                ?? throw new BusinessRuleException("ID BAHAN {$v->text('material_id')} tidak ditemukan; kosongkan ID untuk bahan baru"),
+            $code !== '' => $this->findCi(Material::query(), 'code', $code),
+            default => Material::query()->where('material_type_id', $type->id)->where('color_id', $color?->id)->first(),
+        };
 
         if ($material === null) {
             $material = $this->createMaterial($type, $color, $code !== '' ? $code : null, $attributes);
         } else {
+            $this->warnIfChangedSinceExport($material, $v, "bahan {$material->code}");
+
+            // Ganti kode bahan lewat ID BAHAN.
+            if ($code !== '' && Str::lower($code) !== Str::lower($material->code)) {
+                $other = $this->findCi(Material::query(), 'code', $code);
+
+                if ($other !== null && $other->id !== $material->id) {
+                    throw new BusinessRuleException("kode bahan {$code} sudah dipakai bahan lain");
+                }
+
+                $material->code = $code;
+            }
+
             $material->fill(['material_type_id' => $type->id, ...$attributes]);
             if ($color !== null) {
                 $material->color_id = $color->id;
@@ -323,10 +342,29 @@ class CatalogImporter
             }
         }
 
-        $variant = $this->findCi(ProductVariant::withTrashed(), 'sku', $sku);
+        $variant = $v->filled('variant_id')
+            ? ProductVariant::withTrashed()->find((int) $v->text('variant_id'))
+                ?? throw new BusinessRuleException("ID VARIAN {$v->text('variant_id')} tidak ditemukan; kosongkan ID untuk varian baru")
+            : $this->findCi(ProductVariant::withTrashed(), 'sku', $sku);
 
         if ($variant?->trashed()) {
-            throw new BusinessRuleException("SKU {$sku} sudah dihapus.");
+            throw new BusinessRuleException("SKU {$variant->sku} sudah dihapus.");
+        }
+
+        if ($variant !== null) {
+            $this->warnIfChangedSinceExport($variant, $v, "SKU {$variant->sku}");
+
+            // Ganti SKU lewat ID VARIAN.
+            if (Str::lower($sku) !== Str::lower($variant->sku)) {
+                $other = $this->findCi(ProductVariant::withTrashed(), 'sku', $sku);
+
+                if ($other !== null && $other->id !== $variant->id) {
+                    throw new BusinessRuleException("SKU {$sku} sudah dipakai varian lain");
+                }
+
+                $this->pendingWarnings[] = "SKU {$variant->sku} diganti menjadi {$sku}; perbarui juga SKU di marketplace/BigSeller atau tambahkan SKU lama ke kolom SKU BIG SELLER.";
+                $variant->sku = $sku;
+            }
         }
 
         $variantAttributes = array_filter([
@@ -912,6 +950,18 @@ class CatalogImporter
     private function findCi(Builder $query, string $column, string $value): ?Model
     {
         return $query->whereRaw("lower({$column}) = ?", [Str::lower($value)])->first();
+    }
+
+    /**
+     * Data diubah di sistem setelah file di-export (kolom DIUBAH TERAKHIR): isi file tetap dipakai + peringatan.
+     */
+    private function warnIfChangedSinceExport(Model $model, SpreadsheetRow $v, string $label): void
+    {
+        $exportedAt = $v->stamp('exported_at');
+
+        if ($exportedAt !== null && $model->updated_at?->gt($exportedAt->addSecond())) {
+            $this->warn("{$label} diubah di sistem setelah file di-export ({$model->updated_at->format('d/m/Y H:i')}); isi file dipakai.");
+        }
     }
 
     private function saveIfDirty(Model $model, string $label): void

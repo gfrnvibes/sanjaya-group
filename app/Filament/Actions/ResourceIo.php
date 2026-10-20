@@ -8,6 +8,7 @@ use App\Support\TableExporter;
 use Filament\Actions\Action;
 use Filament\Actions\ActionGroup;
 use Filament\Forms\Components\FileUpload;
+use Filament\Schemas\Components\Component;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Contracts\HasTable;
 use Illuminate\Contracts\Support\Htmlable;
@@ -30,7 +31,7 @@ class ResourceIo
     {
         return array_values(array_filter([
             $importer ? self::import($importer) : null,
-            self::export(),
+            self::export($importer && app($importer)->hasExport() ? [self::exportDataAction($importer)] : []),
         ]));
     }
 
@@ -65,32 +66,78 @@ class ResourceIo
      */
     public static function import(string $importer): ActionGroup
     {
-        $definition = app($importer);
-
         return ActionGroup::make([
-            Action::make('ioTemplate')
-                ->label('Unduh Template')
-                ->icon(Heroicon::OutlinedDocumentArrowDown)
-                ->action(fn (): BinaryFileResponse => response()
-                    ->download(app($importer)->template(), 'template-import-'.Str::slug($definition->title()).'.xlsx')
-                    ->deleteFileAfterSend()),
-            Action::make('ioImport')
-                ->label('Import Excel')
-                ->icon(Heroicon::OutlinedArrowUpTray)
-                ->modalHeading("Import {$definition->title()}")
-                ->modalDescription('Gunakan template (header merah). Baris valid disimpan, baris error dilaporkan; data yang sama persis dengan yang sudah ada dilewati.')
-                ->modalSubmitActionLabel('Import')
-                ->schema([self::fileUpload('imports/'.Str::slug($definition->title()))])
-                ->action(function (array $data) use ($importer, $definition): void {
-                    $result = self::runWithUpload($data, fn (string $path, string $name): array => app($importer)->import($path, $name));
-
-                    ImportResultNotification::send($definition->title(), $result);
-                }),
+            self::templateAction($importer),
+            self::importAction($importer),
         ])
             ->label('Import')
             ->icon(Heroicon::OutlinedArrowUpTray)
             ->button()
             ->color('gray');
+    }
+
+    /**
+     * @param  class-string<RowImporter>  $importer
+     * @param  string  $prefix  awalan nama aksi bila beberapa importer dipasang di satu halaman
+     */
+    public static function templateAction(string $importer, string $prefix = 'io'): Action
+    {
+        $title = app($importer)->title();
+
+        return Action::make("{$prefix}Template")
+            ->label('Unduh Template')
+            ->icon(Heroicon::OutlinedDocumentArrowDown)
+            ->action(fn (): BinaryFileResponse => response()
+                ->download(app($importer)->template(), 'template-import-'.Str::slug($title).'.xlsx')
+                ->deleteFileAfterSend());
+    }
+
+    /**
+     * Export data terkini dalam format template (header merah + kolom sistem hijau), siap diedit lalu diimpor ulang.
+     *
+     * @param  class-string<RowImporter>  $importer
+     */
+    public static function exportDataAction(string $importer, string $prefix = 'io'): Action
+    {
+        $title = app($importer)->title();
+
+        return Action::make("{$prefix}ExportData")
+            ->label('Export Data (untuk diedit)')
+            ->icon(Heroicon::OutlinedArrowDownTray)
+            ->action(fn (): BinaryFileResponse => response()
+                ->download(app($importer)->export(), Str::slug($title).'-'.now()->format('Ymd-His').'.xlsx')
+                ->deleteFileAfterSend());
+    }
+
+    /**
+     * @param  class-string<RowImporter>  $importer
+     * @param  list<Component>  $extraFields  isian tambahan; nilainya diisikan ke properti publik importer bernama sama
+     */
+    public static function importAction(string $importer, string $prefix = 'io', array $extraFields = []): Action
+    {
+        $title = app($importer)->title();
+
+        return Action::make("{$prefix}Import")
+            ->label('Import Excel')
+            ->icon(Heroicon::OutlinedArrowUpTray)
+            ->modalHeading("Import {$title}")
+            ->modalDescription('Gunakan template atau file hasil export (header merah = diisi, hijau = info sistem). Baris valid disimpan, baris error dilaporkan; data yang sama persis dengan yang sudah ada dilewati.')
+            ->modalSubmitActionLabel('Import')
+            ->schema([self::fileUpload('imports/'.Str::slug($title)), ...$extraFields])
+            ->action(function (array $data) use ($importer, $title): void {
+                $instance = app($importer);
+                $public = get_object_vars($instance); // dari luar kelas: hanya properti publik
+
+                foreach ($data as $key => $value) {
+                    if ($key !== 'file' && array_key_exists($key, $public)) {
+                        $instance->{$key} = $value;
+                    }
+                }
+
+                $result = self::runWithUpload($data, fn (string $path, string $name): array => $instance->import($path, $name));
+
+                ImportResultNotification::send($title, $result);
+            });
     }
 
     /**
