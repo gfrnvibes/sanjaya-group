@@ -2,7 +2,7 @@
 
 namespace App\Filament\Resources\VariantPricings\Pages;
 
-use App\Filament\Actions\CatalogActions;
+use App\Filament\Actions\ResourceIo;
 use App\Filament\Resources\VariantPricings\VariantPricingResource;
 use Filament\Resources\Pages\ManageRecords;
 
@@ -18,7 +18,7 @@ class ManageVariantPricings extends ManageRecords
     protected function getHeaderActions(): array
     {
         return [
-            ...CatalogActions::make(withImport: false),
+            ...ResourceIo::make(),
         ];
     }
 }

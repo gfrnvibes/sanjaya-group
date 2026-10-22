@@ -21,6 +21,11 @@ class TailorPaymentImport extends RowImporter
         return 'Pembayaran Upah';
     }
 
+    public function permission(): string
+    {
+        return 'kelola keuangan';
+    }
+
     public function columns(): array
     {
         return [

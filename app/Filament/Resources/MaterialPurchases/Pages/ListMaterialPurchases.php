@@ -14,7 +14,7 @@ class ListMaterialPurchases extends ListRecords
     protected function getHeaderActions(): array
     {
         return [
-            ...CatalogActions::make(),
+            ...CatalogActions::sheet('purchases'),
             CreateAction::make(),
         ];
     }

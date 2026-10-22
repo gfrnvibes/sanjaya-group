@@ -118,7 +118,7 @@ class VariantCostResource extends Resource
     }
 
     /**
-     * HPP dihitung dari resep (PricingService::syncFromBom), tidak diisi manual.
+     * HPP dihitung dari resep (PricingService::syncPrice), tidak diisi manual.
      */
     public static function canCreate(): bool
     {

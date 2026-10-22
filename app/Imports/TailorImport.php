@@ -16,6 +16,11 @@ class TailorImport extends RowImporter
         return 'Penjahit';
     }
 
+    public function permission(): string
+    {
+        return 'kelola produksi';
+    }
+
     public function columns(): array
     {
         return [
@@ -50,5 +55,12 @@ class TailorImport extends RowImporter
         }
 
         $this->saveIfDirty($tailor->fill($attributes));
+    }
+
+    protected function exportRows(): iterable
+    {
+        foreach (Tailor::query()->orderBy('name')->lazy() as $tailor) {
+            yield [$tailor->name, $tailor->phone, $tailor->is_active ? 'Ya' : 'Tidak'];
+        }
     }
 }

@@ -70,6 +70,27 @@ class WorkOrder extends Model
         return $this->hasMany(TailorPayment::class);
     }
 
+    /**
+     * Upah jahit SPK: pcs x ongkos per pcs (ongkos resep model, dicatat saat dipotong).
+     * Pcs = hasil bagus bila SPK selesai, selain itu qty potong.
+     */
+    public function laborTotal(): float
+    {
+        $done = $this->status === WorkOrderStatus::Done;
+
+        return (float) $this->items()->get()->sum(fn (WorkOrderItem $item): float => ($done ? $item->qty_good : $item->qty_cut) * (float) $item->labor_cost_snapshot);
+    }
+
+    /**
+     * Sisa upah yang belum dibayar (tidak pernah negatif).
+     */
+    public function laborDue(?int $exceptPaymentId = null): float
+    {
+        $paid = (float) $this->tailorPayments()->when($exceptPaymentId, fn ($query, $id) => $query->whereKeyNot($id))->sum('amount');
+
+        return max(0.0, round($this->laborTotal() - $paid, 2));
+    }
+
     /** @return BelongsTo<User, $this> */
     public function creator(): BelongsTo
     {

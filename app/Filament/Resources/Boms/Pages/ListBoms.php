@@ -14,7 +14,7 @@ class ListBoms extends ListRecords
     protected function getHeaderActions(): array
     {
         return [
-            ...CatalogActions::make(),
+            ...CatalogActions::sheet('boms'),
             CreateAction::make(),
         ];
     }

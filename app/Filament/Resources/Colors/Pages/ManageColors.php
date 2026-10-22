@@ -2,8 +2,9 @@
 
 namespace App\Filament\Resources\Colors\Pages;
 
-use App\Filament\Actions\CatalogActions;
+use App\Filament\Actions\ResourceIo;
 use App\Filament\Resources\Colors\ColorResource;
+use App\Imports\ColorImport;
 use Filament\Actions\CreateAction;
 use Filament\Resources\Pages\ManageRecords;
 
@@ -14,7 +15,7 @@ class ManageColors extends ManageRecords
     protected function getHeaderActions(): array
     {
         return [
-            ...CatalogActions::make(),
+            ...ResourceIo::make(ColorImport::class),
             CreateAction::make(),
         ];
     }

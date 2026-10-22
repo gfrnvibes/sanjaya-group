@@ -12,10 +12,16 @@ use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Schemas\Components\Section;
+use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Schema;
 
 class GoodsReceiptForm
 {
+    private static function isReadyMade(mixed $source): bool
+    {
+        return ($source instanceof GoodsReceiptSource ? $source : GoodsReceiptSource::tryFrom((string) $source)) === GoodsReceiptSource::BeliJadi;
+    }
+
     public static function configure(Schema $schema): Schema
     {
         return $schema
@@ -44,6 +50,8 @@ class GoodsReceiptForm
                             ->label('Sumber')
                             ->options(GoodsReceiptSource::class)
                             ->default(GoodsReceiptSource::Borongan)
+                            ->helperText('Beli Jadi: isi harga beli per pcs. HPP & harga reseller produk beli jadi dihitung otomatis (harga beli + packing + margin beli jadi).')
+                            ->live()
                             ->required(),
                         Select::make('supplier_id')
                             ->label('Supplier / Penjahit Borongan')
@@ -64,7 +72,7 @@ class GoodsReceiptForm
                             ->table([
                                 TableColumn::make('Varian'),
                                 TableColumn::make('Qty'),
-                                TableColumn::make('HPP / pcs'),
+                                TableColumn::make('Harga Beli / HPP per pcs'),
                             ])
                             ->schema([
                                 Select::make('variant_id')
@@ -78,6 +86,8 @@ class GoodsReceiptForm
                                     ->required(),
                                 TextInput::make('unit_cost')
                                     ->numeric()
+                                    ->minValue(0)
+                                    ->required(fn (Get $get): bool => self::isReadyMade($get('../../source')))
                                     ->prefix('Rp'),
                             ])
                             ->minItems(1)

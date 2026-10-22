@@ -65,6 +65,9 @@ class MasterDataSeeder extends Seeder
     {
         foreach ([
             'margin_default' => 0.30,
+            'margin_ready_made_pct' => 0.05,
+            'margin_ready_made_amount' => 2000,
+            'packing_cost_default' => 0,
             'price_rounding' => 500,
             'tier_price_rounding' => 100,
             'price_tolerance_pct' => 0.02,
@@ -73,7 +76,7 @@ class MasterDataSeeder extends Seeder
             'lead_time_days' => 7,
             'production_batch' => 6,
         ] as $key => $value) {
-            Setting::create(['key' => $key, 'value' => $value]);
+            Setting::updateOrCreate(['key' => $key], ['value' => $value]);
         }
     }
 

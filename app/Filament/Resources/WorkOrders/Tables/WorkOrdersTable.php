@@ -35,7 +35,7 @@ class WorkOrdersTable
                 TextColumn::make('tailor.name')
                     ->label('Penjahit')
                     ->searchable()
-                    ->placeholder('-'),
+                    ->placeholder('Belum dicatat'),
                 TextColumn::make('status')
                     ->label('Status')
                     ->badge()

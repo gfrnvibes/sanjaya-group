@@ -66,6 +66,14 @@ abstract class RowImporter
     abstract public function columns(): array;
 
     /**
+     * Izin yang dibutuhkan untuk mengimpor (lihat ApplicationAccess).
+     */
+    public function permission(): string
+    {
+        return 'kelola stok';
+    }
+
+    /**
      * Kunci header yang harus ada agar sheet dikenali.
      *
      * @return list<string|list<string>>

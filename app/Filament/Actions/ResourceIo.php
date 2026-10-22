@@ -121,12 +121,7 @@ class ResourceIo
         $title = app($importer)->title();
 
         return Action::make("{$prefix}Import")
-            ->authorize(fn (): bool => ApplicationAccess::allows(match (class_basename($importer)) {
-                'ExpenseImport', 'CashAccountImport', 'ExpenseCategoryImport', 'ResellerPaymentImport', 'TailorPaymentImport', 'StoreAdSpendImport' => 'kelola keuangan',
-                'TailorImport' => 'kelola produksi',
-                'SalesReturnImport', 'SkuAliasImport' => 'kelola penjualan',
-                default => 'kelola stok',
-            }))
+            ->authorize(fn (): bool => ApplicationAccess::allows(app($importer)->permission()))
             ->label('Import Excel')
             ->icon(Heroicon::OutlinedArrowUpTray)
             ->modalHeading("Import {$title}")

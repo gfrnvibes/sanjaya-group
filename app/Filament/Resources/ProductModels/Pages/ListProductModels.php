@@ -2,8 +2,9 @@
 
 namespace App\Filament\Resources\ProductModels\Pages;
 
-use App\Filament\Actions\CatalogActions;
+use App\Filament\Actions\ResourceIo;
 use App\Filament\Resources\ProductModels\ProductModelResource;
+use App\Imports\ProductModelImport;
 use Filament\Actions\CreateAction;
 use Filament\Resources\Pages\ListRecords;
 
@@ -14,7 +15,7 @@ class ListProductModels extends ListRecords
     protected function getHeaderActions(): array
     {
         return [
-            ...CatalogActions::make(),
+            ...ResourceIo::make(ProductModelImport::class),
             CreateAction::make(),
         ];
     }

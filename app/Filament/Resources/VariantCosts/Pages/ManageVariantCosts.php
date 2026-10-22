@@ -2,7 +2,7 @@
 
 namespace App\Filament\Resources\VariantCosts\Pages;
 
-use App\Filament\Actions\CatalogActions;
+use App\Filament\Actions\ResourceIo;
 use App\Filament\Resources\VariantCosts\VariantCostResource;
 use App\Filament\Support\PriceSyncNotification;
 use App\Models\ProductVariant;
@@ -23,7 +23,7 @@ class ManageVariantCosts extends ManageRecords
     protected function getHeaderActions(): array
     {
         return [
-            ...CatalogActions::make(withImport: false),
+            ...ResourceIo::make(),
             Action::make('refreshAll')
                 ->label('Hitung Ulang Semua HPP & Harga')
                 ->icon(Heroicon::OutlinedCalculator)

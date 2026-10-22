@@ -12,7 +12,8 @@ use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 /**
  * Workbook Reseller & Toko: export -> edit di Excel -> import ulang.
- * Dipasang di semua resource grup Reseller & Toko dan di Pusat Import / Export.
+ * Dipasang di halaman Toko (1 baris = 1 toko) dan di Pusat Import / Export; halaman Pemilik, Reseller,
+ * Channel, dan Tier Harga memakai importer masing-masing.
  */
 class StoreActions
 {

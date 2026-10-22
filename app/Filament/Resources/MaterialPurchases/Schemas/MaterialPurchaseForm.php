@@ -46,6 +46,7 @@ class MaterialPurchaseForm
                             ->label('Gudang Tujuan')
                             ->relationship('warehouse', 'name', fn ($query) => $query->forMaterials())
                             ->default(fn () => Warehouse::defaultForMaterials()?->id)
+                            ->helperText('Khusus bahan baku. Pembelian produk jadi (beli jadi) diinput lewat Barang Masuk dengan sumber Beli Jadi.')
                             ->required()
                             ->disabledOn('edit'),
                         TextInput::make('ref_no')

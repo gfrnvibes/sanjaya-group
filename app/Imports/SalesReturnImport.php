@@ -23,6 +23,11 @@ class SalesReturnImport extends RowImporter
         return 'Retur Penjualan';
     }
 
+    public function permission(): string
+    {
+        return 'kelola penjualan';
+    }
+
     public function columns(): array
     {
         return [

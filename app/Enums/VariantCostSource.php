@@ -9,6 +9,7 @@ enum VariantCostSource: string implements HasLabel
     case Bom = 'bom';
     case Legacy = 'legacy';
     case Manual = 'manual';
+    case Purchase = 'purchase';
 
     public function getLabel(): string
     {
@@ -16,6 +17,7 @@ enum VariantCostSource: string implements HasLabel
             self::Bom => 'Dari Resep (BOM)',
             self::Legacy => 'HPP Lama',
             self::Manual => 'Manual',
+            self::Purchase => 'Harga Beli + Packing',
         };
     }
 }

@@ -47,7 +47,7 @@ class ProductModelForm
                             ->required(),
                         TextInput::make('default_margin_pct')
                             ->label('Margin Default')
-                            ->helperText('Kosong = pakai pengaturan margin_default.')
+                            ->helperText('Kosong = pakai pengaturan margin_default (produksi) atau margin_ready_made_pct + margin_ready_made_amount (beli jadi).')
                             ->numeric()
                             ->suffix('%')
                             ->formatStateUsing(fn ($state): ?float => $state === null ? null : (float) $state * 100)

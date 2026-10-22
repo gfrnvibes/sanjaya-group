@@ -2,8 +2,9 @@
 
 namespace App\Filament\Resources\Suppliers\Pages;
 
-use App\Filament\Actions\CatalogActions;
+use App\Filament\Actions\ResourceIo;
 use App\Filament\Resources\Suppliers\SupplierResource;
+use App\Imports\SupplierImport;
 use Filament\Actions\CreateAction;
 use Filament\Resources\Pages\ManageRecords;
 
@@ -14,7 +15,7 @@ class ManageSuppliers extends ManageRecords
     protected function getHeaderActions(): array
     {
         return [
-            ...CatalogActions::make(),
+            ...ResourceIo::make(SupplierImport::class),
             CreateAction::make(),
         ];
     }

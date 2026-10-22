@@ -110,6 +110,16 @@ class BusinessRecordObserver
         if (app()->resolved(SalesDashboardService::class)) {
             app(SalesDashboardService::class)->forget();
         }
-        activity('business')->performedOn($model)->causedBy(auth()->user())->event($event)->withProperties($properties + ['origin' => app()->runningInConsole() ? 'console' : 'web'])->log($event);
+        $properties += ['origin' => app()->runningInConsole() ? 'console' : 'web'];
+        $logger = activity('business')->causedBy(auth()->user())->event($event);
+
+        // activity_log.subject_id berupa bigint: model berkunci teks (mis. Setting) dicatat lewat properti.
+        if (is_int($model->getKey()) || ctype_digit((string) $model->getKey())) {
+            $logger->performedOn($model);
+        } else {
+            $properties += ['subject' => class_basename($model).':'.$model->getKey()];
+        }
+
+        $logger->withProperties($properties)->log($event);
     }
 }

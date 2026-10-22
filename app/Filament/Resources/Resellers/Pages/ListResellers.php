@@ -2,8 +2,9 @@
 
 namespace App\Filament\Resources\Resellers\Pages;
 
-use App\Filament\Actions\StoreActions;
+use App\Filament\Actions\ResourceIo;
 use App\Filament\Resources\Resellers\ResellerResource;
+use App\Imports\ResellerImport;
 use Filament\Actions\CreateAction;
 use Filament\Resources\Pages\ListRecords;
 
@@ -14,7 +15,7 @@ class ListResellers extends ListRecords
     protected function getHeaderActions(): array
     {
         return [
-            ...StoreActions::make(),
+            ...ResourceIo::make(ResellerImport::class),
             CreateAction::make(),
         ];
     }

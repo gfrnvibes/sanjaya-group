@@ -49,6 +49,7 @@ class WorkOrderForm
                             ->required(fn (string $operation): bool => $operation === 'create'),
                         Select::make('tailor_id')
                             ->label('Penjahit')
+                            ->helperText('Boleh dikosongkan; dicatat otomatis saat bayaran upah mingguan.')
                             ->relationship('tailor', 'name', fn (Builder $query) => $query->where('is_active', true))
                             ->searchable()
                             ->preload()

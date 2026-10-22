@@ -89,6 +89,7 @@ class CatalogImporter
                 'MARGIN VARIAN %' => 'margin',
                 'AKTIF' => 'is_active',
                 'SKU BIG SELLER' => 'aliases',
+                'BIAYA PACKING' => 'packing_cost',
             ],
             'system' => ['ID VARIAN' => 'variant_id', 'DIUBAH TERAKHIR' => 'exported_at'],
             'required' => ['model_code', 'sku'],
@@ -160,9 +161,10 @@ class CatalogImporter
     public function __construct(private InventoryService $inventory, private PricingService $pricing) {}
 
     /**
+     * @param  list<string>|null  $only  jenis sheet yang diproses (mis. ['products'] dari halaman Varian); null = semua
      * @return array{rows: int, sheets: list<string>, stats: array<string, array{created: int, updated: int, skipped: int}>, errors: list<string>, warnings: list<string>}
      */
-    public function import(string $path, string $fileName): array
+    public function import(string $path, string $fileName, ?array $only = null): array
     {
         $this->stats = [];
         $this->errors = [];
@@ -171,6 +173,7 @@ class CatalogImporter
 
         try {
             $sheets = Spreadsheet::readSheets($path, $fileName, collect(self::SHEETS)
+                ->when($only !== null, fn (Collection $sheets) => $sheets->only($only))
                 ->map(fn (array $sheet): array => ['headers' => [...$sheet['headers'], ...($sheet['system'] ?? [])], 'required' => $sheet['required']])
                 ->all());
         } catch (BusinessRuleException $exception) {
@@ -178,7 +181,9 @@ class CatalogImporter
         }
 
         if ($sheets === []) {
-            return ['rows' => 0, 'sheets' => [], 'stats' => [], 'errors' => ['Tidak ada sheet yang dikenali. Gunakan template katalog (sheet Bahan / Produk / Resep BOM / Pembelian Bahan).'], 'warnings' => []];
+            $titles = collect(self::SHEETS)->only($only ?? array_keys(self::SHEETS))->pluck('title')->implode(' / ');
+
+            return ['rows' => 0, 'sheets' => [], 'stats' => [], 'errors' => ["Tidak ada sheet yang dikenali. Gunakan template (sheet {$titles})."], 'warnings' => []];
         }
 
         foreach ($sheets['materials'] ?? [] as $row) {
@@ -307,6 +312,7 @@ class CatalogImporter
         $modelMargin = $v->percent('model_margin', 'MARGIN MODEL %');
         $margin = $v->percent('margin', 'MARGIN VARIAN %');
         $minStock = $v->number('min_stock', 'MIN STOK', min: 0, integer: true);
+        $packingCost = $v->number('packing_cost', 'BIAYA PACKING', min: 0);
         $isActive = $v->bool('is_active');
         $v->throwIfInvalid();
 
@@ -334,7 +340,7 @@ class CatalogImporter
             ]);
         } else {
             $model->fill($modelAttributes);
-            $modelMarginChanged = $model->isDirty('default_margin_pct');
+            $modelMarginChanged = $model->isDirty(['default_margin_pct', 'kind']);
             $this->saveIfDirty($model, 'Model');
 
             if ($modelMarginChanged) {
@@ -373,6 +379,7 @@ class CatalogImporter
             'size_id' => $size?->id,
             'min_stock' => $minStock === null ? null : (int) $minStock,
             'margin_pct' => $margin,
+            'packing_cost' => $packingCost,
             'is_active' => $isActive,
         ], fn ($value): bool => $value !== null);
 
@@ -389,7 +396,7 @@ class CatalogImporter
             $variant->fill(['model_id' => $model->id, ...$variantAttributes]);
 
             // Harga otomatis: margin berubah = berlaku hari ini; model/warna/ukuran berubah = dari tanggal resep.
-            if ($variant->isDirty('margin_pct')) {
+            if ($variant->isDirty(['margin_pct', 'packing_cost'])) {
                 $this->triggerPrice([$variant->id], today()->toDateString());
             } elseif ($variant->isDirty(['model_id', 'color_id', 'size_id'])) {
                 $this->triggerPrice([$variant->id], null);

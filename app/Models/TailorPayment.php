@@ -12,6 +12,19 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 #[Fillable(['tailor_id', 'work_order_id', 'paid_at', 'amount', 'cash_account_id', 'note', 'created_by'])]
 class TailorPayment extends Model
 {
+    /**
+     * SPK boleh dibuat tanpa penjahit (baru diketahui saat bayaran mingguan):
+     * pembayaran pertama untuk SPK tersebut sekaligus mencatat penjahitnya di SPK.
+     */
+    protected static function booted(): void
+    {
+        static::saved(function (TailorPayment $payment): void {
+            if ($payment->work_order_id !== null && $payment->tailor_id !== null) {
+                WorkOrder::query()->whereKey($payment->work_order_id)->whereNull('tailor_id')->update(['tailor_id' => $payment->tailor_id]);
+            }
+        });
+    }
+
     protected function casts(): array
     {
         return [

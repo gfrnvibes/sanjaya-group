@@ -17,6 +17,11 @@ class ExpenseCategoryImport extends RowImporter
         return 'Kategori Biaya';
     }
 
+    public function permission(): string
+    {
+        return 'kelola keuangan';
+    }
+
     public function columns(): array
     {
         return [
@@ -49,5 +54,12 @@ class ExpenseCategoryImport extends RowImporter
         }
 
         $this->saveIfDirty($category->fill(array_filter(['name' => $row->text('name') ?: null])));
+    }
+
+    protected function exportRows(): iterable
+    {
+        foreach (ExpenseCategory::query()->orderBy('code')->lazy() as $category) {
+            yield [$category->code, $category->name];
+        }
     }
 }

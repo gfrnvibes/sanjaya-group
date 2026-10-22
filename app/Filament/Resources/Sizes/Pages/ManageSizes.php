@@ -2,8 +2,9 @@
 
 namespace App\Filament\Resources\Sizes\Pages;
 
-use App\Filament\Actions\CatalogActions;
+use App\Filament\Actions\ResourceIo;
 use App\Filament\Resources\Sizes\SizeResource;
+use App\Imports\SizeImport;
 use Filament\Actions\CreateAction;
 use Filament\Resources\Pages\ManageRecords;
 
@@ -14,7 +15,7 @@ class ManageSizes extends ManageRecords
     protected function getHeaderActions(): array
     {
         return [
-            ...CatalogActions::make(),
+            ...ResourceIo::make(SizeImport::class),
             CreateAction::make(),
         ];
     }

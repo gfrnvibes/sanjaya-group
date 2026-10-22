@@ -50,11 +50,17 @@ class ProductVariantForm
                             ->required(),
                         TextInput::make('margin_pct')
                             ->label('Margin Khusus')
-                            ->helperText('Kosong = ikut margin model / default.')
+                            ->helperText('Kosong = ikut margin model / default (produksi: margin_default, beli jadi: margin_ready_made_pct + margin_ready_made_amount).')
                             ->numeric()
                             ->suffix('%')
                             ->formatStateUsing(fn ($state): ?float => $state === null ? null : (float) $state * 100)
                             ->dehydrateStateUsing(fn ($state): ?float => blank($state) ? null : (float) $state / 100),
+                        TextInput::make('packing_cost')
+                            ->label('Biaya Packing / pcs')
+                            ->helperText('Khusus produk beli jadi. Kosong = ikut pengaturan packing_cost_default.')
+                            ->numeric()
+                            ->minValue(0)
+                            ->prefix('Rp'),
                         Toggle::make('is_active')
                             ->label('Aktif')
                             ->default(true)

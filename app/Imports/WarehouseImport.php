@@ -56,4 +56,11 @@ class WarehouseImport extends RowImporter
 
         $this->saveIfDirty($warehouse->fill($attributes));
     }
+
+    protected function exportRows(): iterable
+    {
+        foreach (Warehouse::query()->orderBy('code')->lazy() as $warehouse) {
+            yield [$warehouse->code, $warehouse->name, $warehouse->kind->getLabel(), $warehouse->is_active ? 'Ya' : 'Tidak'];
+        }
+    }
 }

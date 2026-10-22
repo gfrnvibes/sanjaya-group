@@ -17,6 +17,11 @@ class StoreAdSpendImport extends RowImporter
         return 'Biaya Iklan';
     }
 
+    public function permission(): string
+    {
+        return 'kelola keuangan';
+    }
+
     public function columns(): array
     {
         return [

@@ -19,7 +19,9 @@ use Illuminate\Support\Facades\DB;
 
 /**
  * Harga reseller: harga dasar berlaku x (1 + % tier pemilik), plus HPP berlaku.
- * Harga dasar dibuat OTOMATIS dari HPP resep x (1 + margin); tidak diisi manual.
+ * Harga dasar dibuat OTOMATIS, tidak diisi manual:
+ *  - produksi : HPP resep x (1 + margin);
+ *  - beli jadi: (harga beli + packing) x (1 + margin beli jadi %) + margin beli jadi nominal.
  */
 class PricingService
 {
@@ -63,7 +65,8 @@ class PricingService
     }
 
     /**
-     * Margin berlaku varian: margin varian > margin model > pengaturan margin_default > 30%.
+     * Margin % berlaku varian: margin varian > margin model > pengaturan
+     * (margin_default 30% untuk produksi, margin_ready_made_pct 5% untuk beli jadi).
      */
     public function marginFor(ProductVariant $variant): float
     {
@@ -71,32 +74,41 @@ class PricingService
 
         return (float) ($variant->margin_pct
             ?? $variant->model?->default_margin_pct
-            ?? Setting::valueOf('margin_default')
-            ?? 0.30);
+            ?? ($variant->isReadyMade() ? Setting::valueOf('margin_ready_made_pct', 0.05) : Setting::valueOf('margin_default', 0.30)));
     }
 
     /**
-     * Harga dasar = HPP x (1 + margin), dibulatkan ke atas sesuai pengaturan price_rounding (sama dengan v_variant_pricing).
+     * Margin nominal (Rp per pcs) di atas margin %: hanya beli jadi (pengaturan margin_ready_made_amount, default 2000).
      */
-    public function basePriceFor(float $totalCost, float $margin): float
+    public function marginAmountFor(ProductVariant $variant): float
+    {
+        return $variant->isReadyMade() ? (float) Setting::valueOf('margin_ready_made_amount', 2000) : 0.0;
+    }
+
+    /**
+     * Harga dasar = HPP x (1 + margin) + margin nominal, dibulatkan ke atas sesuai pengaturan price_rounding
+     * (sama dengan v_variant_pricing).
+     */
+    public function basePriceFor(float $totalCost, float $margin, float $marginAmount = 0.0): float
     {
         $rounding = (float) Setting::valueOf('price_rounding', 100) ?: 100;
 
-        return ceil(round($totalCost * (1 + $margin) / $rounding, 6)) * $rounding;
+        return ceil(round(($totalCost * (1 + $margin) + $marginAmount) / $rounding, 6)) * $rounding;
     }
 
     /**
-     * HARGA OTOMATIS: hitung ulang HPP dari resep pada tanggal $date, lalu simpan harga dasar
-     * (HPP x (1 + margin)) yang berlaku mulai tanggal itu.
+     * HARGA OTOMATIS: hitung ulang HPP pada tanggal $date (resep, atau harga beli + packing untuk beli jadi),
+     * lalu simpan harga dasar yang berlaku mulai tanggal itu.
      *
-     * @throws BusinessRuleException resep/bahan belum lengkap, atau harga tanggal itu sudah dipakai pesanan
+     * @throws BusinessRuleException resep/bahan/harga beli belum lengkap, atau harga tanggal itu sudah dipakai pesanan
      */
-    public function syncFromBom(ProductVariant $variant, CarbonInterface|string $date): ResellerPriceHistory
+    public function syncPrice(ProductVariant $variant, CarbonInterface|string $date): ResellerPriceHistory
     {
         $date = Carbon::parse($date)->toDateString();
         $cost = $this->costing->refreshVariantCost($variant, $date)->refresh();
         $margin = $this->marginFor($variant);
-        $basePrice = $this->basePriceFor((float) $cost->total_cost, $margin);
+        $marginAmount = $this->marginAmountFor($variant);
+        $basePrice = $this->basePriceFor((float) $cost->total_cost, $margin, $marginAmount);
 
         $price = $variant->priceHistories()->whereDate('effective_from', $date)->first();
 
@@ -121,13 +133,16 @@ class PricingService
                 'margin_pct' => $margin,
                 'source' => PriceSource::Auto,
                 'approved_by' => auth()->id(),
-                'note' => 'Otomatis dari resep + margin',
+                'note' => $variant->isReadyMade()
+                    ? 'Otomatis dari harga beli + packing + margin '.round($margin * 100, 2).'% + Rp'.number_format($marginAmount, 0, ',', '.')
+                    : 'Otomatis dari resep + margin',
             ],
         );
     }
 
     /**
-     * Sinkronkan HPP & harga beberapa varian. Tanggal kosong = tanggal berlaku resep yang dipakai hari ini.
+     * Sinkronkan HPP & harga beberapa varian. Tanggal kosong = tanggal resep yang dipakai hari ini
+     * (beli jadi: tanggal pembelian terakhir).
      *
      * @param  iterable<ProductVariant>  $variants
      * @return array{synced: int, skipped: list<string>}
@@ -138,16 +153,18 @@ class PricingService
         $skipped = [];
 
         foreach ($variants as $variant) {
-            $effectiveFrom = $date ?? $this->costing->bomFor($variant, today())?->effective_from;
+            $effectiveFrom = $date ?? $this->costing->costDateFor($variant);
 
             if ($effectiveFrom === null) {
-                $skipped[] = "{$variant->sku}: belum punya resep (BOM), harga belum bisa dihitung.";
+                $skipped[] = $variant->isReadyMade()
+                    ? "{$variant->sku}: produk beli jadi belum punya harga beli (Barang Masuk sumber Beli Jadi), harga belum bisa dihitung."
+                    : "{$variant->sku}: belum punya resep (BOM), harga belum bisa dihitung.";
 
                 continue;
             }
 
             try {
-                DB::transaction(fn () => $this->syncFromBom($variant, $effectiveFrom));
+                DB::transaction(fn () => $this->syncPrice($variant, $effectiveFrom));
                 $synced++;
             } catch (BusinessRuleException $exception) {
                 $skipped[] = "{$variant->sku}: ".rtrim($exception->getMessage(), '.').'.';
@@ -170,6 +187,23 @@ class PricingService
             ->get();
 
         return $this->syncVariants($variants, $bom->effective_from);
+    }
+
+    /**
+     * Barang masuk beli jadi: harga varian beli jadi berlaku mulai tanggal terima.
+     *
+     * @param  iterable<int>  $variantIds
+     * @return array{synced: int, skipped: list<string>}
+     */
+    public function syncForReadyMade(iterable $variantIds, CarbonInterface|string $date): array
+    {
+        $variants = ProductVariant::query()
+            ->with('model')
+            ->whereIn('id', collect($variantIds)->unique()->all())
+            ->get()
+            ->filter(fn (ProductVariant $variant): bool => $variant->isReadyMade());
+
+        return $this->syncVariants($variants, Carbon::parse($date)->toDateString());
     }
 
     /**

@@ -131,7 +131,7 @@ class ResellerPriceHistoryResource extends Resource
     }
 
     /**
-     * Harga dasar dibuat otomatis dari resep + margin (PricingService::syncFromBom), tidak diisi manual.
+     * Harga dasar dibuat otomatis dari resep + margin (PricingService::syncPrice), tidak diisi manual.
      */
     public static function canCreate(): bool
     {

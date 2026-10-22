@@ -16,6 +16,11 @@ class CashAccountImport extends RowImporter
         return 'Rekening / Kas';
     }
 
+    public function permission(): string
+    {
+        return 'kelola keuangan';
+    }
+
     public function columns(): array
     {
         return [
@@ -56,5 +61,12 @@ class CashAccountImport extends RowImporter
         }
 
         $this->saveIfDirty($account->fill($attributes));
+    }
+
+    protected function exportRows(): iterable
+    {
+        foreach (CashAccount::query()->orderBy('name')->lazy() as $account) {
+            yield [$account->name, $account->bank, $account->holder, $account->is_active ? 'Ya' : 'Tidak'];
+        }
     }
 }

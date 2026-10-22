@@ -20,6 +20,11 @@ class ResellerPaymentImport extends RowImporter
         return 'Pembayaran Reseller';
     }
 
+    public function permission(): string
+    {
+        return 'kelola keuangan';
+    }
+
     public function columns(): array
     {
         return [

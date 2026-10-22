@@ -19,6 +19,11 @@ class ExpenseImport extends RowImporter
         return 'Biaya Operasional';
     }
 
+    public function permission(): string
+    {
+        return 'kelola keuangan';
+    }
+
     public function columns(): array
     {
         return [

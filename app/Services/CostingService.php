@@ -4,21 +4,26 @@ namespace App\Services;
 
 use App\Enums\BomColorMode;
 use App\Enums\BomLineType;
+use App\Enums\GoodsReceiptSource;
 use App\Enums\MaterialMovementType;
 use App\Enums\VariantCostSource;
 use App\Exceptions\BusinessRuleException;
 use App\Models\Bom;
 use App\Models\BomItem;
+use App\Models\GoodsReceiptItem;
 use App\Models\Material;
 use App\Models\MaterialMovement;
 use App\Models\MaterialPurchaseItem;
 use App\Models\ProductVariant;
+use App\Models\Setting;
 use App\Models\VariantCost;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Carbon;
 
 /**
- * HPP dari resep (BOM) x harga beli bahan terakhir.
+ * HPP varian:
+ *  - PRODUKSI: resep (BOM) x harga beli bahan terakhir + ongkos;
+ *  - BELI JADI: harga beli terakhir (Barang Masuk sumber Beli Jadi) + biaya packing.
  */
 class CostingService
 {
@@ -118,11 +123,65 @@ class CostingService
     }
 
     /**
-     * Simpan HPP hasil hitung BOM sebagai riwayat (effective_from = tanggal hitung).
+     * Pembelian beli jadi terakhir (harga per pcs terisi) yang sudah diterima pada tanggal tersebut.
+     *
+     * @return array{unit_cost: float, date: string}|null
+     */
+    public function latestPurchase(ProductVariant $variant, CarbonInterface|string $date): ?array
+    {
+        $item = GoodsReceiptItem::query()
+            ->join('goods_receipts', 'goods_receipts.id', '=', 'goods_receipt_items.receipt_id')
+            ->where('goods_receipt_items.variant_id', $variant->id)
+            ->where('goods_receipts.source', GoodsReceiptSource::BeliJadi)
+            ->whereNotNull('goods_receipt_items.unit_cost')
+            ->where('goods_receipts.received_at', '<', Carbon::parse($date)->addDay()->startOfDay())
+            ->orderByDesc('goods_receipts.received_at')
+            ->orderByDesc('goods_receipt_items.id')
+            ->first(['goods_receipt_items.unit_cost', 'goods_receipts.received_at']);
+
+        return $item === null ? null : [
+            'unit_cost' => (float) $item->unit_cost,
+            'date' => Carbon::parse($item->received_at)->toDateString(),
+        ];
+    }
+
+    /**
+     * Biaya packing per pcs: isian varian, atau pengaturan packing_cost_default.
+     */
+    public function packingCostFor(ProductVariant $variant): float
+    {
+        return (float) ($variant->packing_cost ?? Setting::valueOf('packing_cost_default', 0));
+    }
+
+    /**
+     * Tanggal berlaku HPP terbaru yang bisa dihitung hari ini: tanggal resep (produksi) atau tanggal pembelian (beli jadi).
+     */
+    public function costDateFor(ProductVariant $variant, CarbonInterface|string|null $date = null): ?string
+    {
+        $date ??= today();
+
+        return $variant->isReadyMade()
+            ? $this->latestPurchase($variant, $date)['date'] ?? null
+            : $this->bomFor($variant, $date)?->effective_from?->toDateString();
+    }
+
+    /**
+     * Simpan HPP sebagai riwayat (effective_from = tanggal hitung): dari resep (produksi) atau harga beli + packing (beli jadi).
      */
     public function refreshVariantCost(ProductVariant $variant, CarbonInterface|string|null $date = null): VariantCost
     {
         $date = Carbon::parse($date ?? today())->toDateString();
+
+        if ($variant->isReadyMade()) {
+            $purchase = $this->latestPurchase($variant, $date)
+                ?? throw new BusinessRuleException("Harga beli {$variant->sku} belum ada pada tanggal {$date}. Input Barang Masuk sumber Beli Jadi dengan harga per pcs.");
+
+            return VariantCost::updateOrCreate(
+                ['variant_id' => $variant->id, 'effective_from' => $date],
+                ['material_cost' => round($purchase['unit_cost'], 2), 'labor_cost' => round($this->packingCostFor($variant), 2), 'source' => VariantCostSource::Purchase],
+            );
+        }
+
         $cost = $this->calculate($variant, $date);
 
         return VariantCost::updateOrCreate(

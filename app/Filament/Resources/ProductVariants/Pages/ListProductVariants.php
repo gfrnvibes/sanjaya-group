@@ -14,7 +14,7 @@ class ListProductVariants extends ListRecords
     protected function getHeaderActions(): array
     {
         return [
-            ...CatalogActions::make(),
+            ...CatalogActions::sheet('products'),
             CreateAction::make(),
         ];
     }

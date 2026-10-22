@@ -38,18 +38,21 @@ class CatalogSpreadsheet
 
     private const WIDTHS = [
         'materials' => [16, 20, 14, 11, 14, 22, 12, 11, 16, 10, 8, 11, 20, 12, 13, 10, 19],
-        'products' => [16, 12, 24, 13, 13, 11, 14, 9, 16, 32, 9, 14, 8, 26, 10, 19, 11, 11, 11, 14, 14, 18],
+        'products' => [16, 12, 24, 13, 13, 11, 14, 9, 16, 32, 9, 14, 8, 26, 14, 10, 19, 11, 11, 11, 14, 14, 18],
         'boms' => [12, 9, 13, 24, 13, 16, 22, 15, 12, 16, 14],
         'purchases' => [12, 22, 15, 14, 12, 22, 10, 15, 14, 24],
     ];
 
-    public function template(): string
+    /**
+     * @param  list<string>|null  $only  jenis sheet (mis. ['products'] untuk halaman Varian); null = workbook lengkap
+     */
+    public function template(?array $only = null): string
     {
         $path = Spreadsheet::tempPath('xlsx');
         $writer = new XlsxWriter;
         $writer->openToFile($path);
 
-        $this->writeDataSheets($writer, fn (): array => []);
+        $this->writeDataSheets($writer, fn (): array => [], only: $only);
 
         Spreadsheet::addSheet($writer, 'Petunjuk', [18, 26, 16, 90], [
             ['SHEET', 'KOLOM', 'WAJIB', 'KETERANGAN'],
@@ -69,11 +72,13 @@ class CatalogSpreadsheet
             ['Bahan', 'GUDANG, TGL STOK AWAL', '-', 'Kode/nama gudang (default gudang utama) dan tanggal (default hari ini).'],
             ['', '', '', ''],
             ['Produk', 'KATEGORI, KODE MODEL, NAMA MODEL', 'Kode: Ya', 'NAMA MODEL kosong = dari NAMA VARIAN tanpa warna/ukuran; KATEGORI kosong = Umum. JENIS PRODUK: produksi / beli_jadi / jasa.'],
-            ['Produk', 'MARGIN MODEL % / MARGIN VARIAN %', '-', 'Mis. 30 atau 30%. Kosong = ikut default.'],
+            ['Produk', 'MARGIN MODEL % / MARGIN VARIAN %', '-', 'Mis. 30 atau 30%. Kosong = ikut default (produksi: margin_default; beli jadi: margin_ready_made_pct + margin_ready_made_amount).'],
+            ['Produk', 'BIAYA PACKING', '-', 'Khusus beli jadi, Rp per pcs. Kosong = ikut pengaturan packing_cost_default.'],
             ['Produk', 'KODE / NAMA WARNA, UKURAN', '-', 'Warna & ukuran varian.'],
             ['Produk', 'SKU VARIAN', 'Ya', 'Kunci varian. NAMA VARIAN kosong = "Model Warna Ukuran". Ganti SKU: ubah SKU VARIAN, biarkan ID VARIAN.'],
             ['Produk', 'SKU BIG SELLER', '-', 'Boleh lebih dari satu, pisahkan dengan koma. Hanya ditambahkan, tidak dihapus.'],
-            ['Produk', 'HPP & HARGA RESELLER', 'Otomatis', 'Tidak diisi: HPP dihitung dari resep x harga beli bahan, harga dasar = HPP x (1 + margin), berlaku mulai tanggal resep/pembelian.'],
+            ['Produk', 'HPP & HARGA RESELLER', 'Otomatis', 'Tidak diisi. Produksi: HPP = resep x harga beli bahan, harga dasar = HPP x (1 + margin), berlaku mulai tanggal resep/pembelian bahan.'],
+            ['', '', '', 'Beli jadi: HPP = harga beli terakhir (Barang Masuk sumber Beli Jadi) + packing, harga dasar = HPP x (1 + margin %) + margin nominal, berlaku mulai tanggal terima.'],
             ['', '', '', 'Di file export kolom ini berheader hijau (hanya info) dan diabaikan saat impor ulang.'],
             ['Bahan & Produk', 'ID BAHAN / ID VARIAN, DIUBAH TERAKHIR', 'Jangan diubah', 'Kolom hijau dari sistem. Kosong = data baru. Bila data diubah di sistem setelah file di-export, isi file tetap dipakai dan muncul peringatan.'],
             ['Umum', 'Hapus baris', '-', 'Menghapus baris di Excel TIDAK menghapus data. Untuk menghentikan produk/bahan, isi AKTIF = Tidak.'],
@@ -101,7 +106,7 @@ class CatalogSpreadsheet
     }
 
     /**
-     * @param  string  $format  xlsx / ods (semua sheet) atau csv (+ $sheet)
+     * @param  string  $format  xlsx / ods (semua sheet, atau hanya $sheet) atau csv (+ $sheet)
      */
     public function export(string $format, ?string $sheet = null): string
     {
@@ -119,7 +124,7 @@ class CatalogSpreadsheet
 
         $writer = $format === 'ods' ? new OdsWriter : new XlsxWriter;
         $writer->openToFile($path);
-        $this->writeDataSheets($writer, fn (string $type): Collection => $this->rows($type), withAuto: true);
+        $this->writeDataSheets($writer, fn (string $type): Collection => $this->rows($type), withAuto: true, only: $sheet === null ? null : [$sheet]);
         $writer->close();
 
         return $path;
@@ -139,12 +144,13 @@ class CatalogSpreadsheet
 
     /**
      * @param  callable(string): iterable<list<mixed>>  $rows
+     * @param  list<string>|null  $only
      */
-    private function writeDataSheets(AbstractWriterMultiSheets $writer, callable $rows, bool $withAuto = false): void
+    private function writeDataSheets(AbstractWriterMultiSheets $writer, callable $rows, bool $withAuto = false, ?array $only = null): void
     {
         $first = true;
 
-        foreach (CatalogImporter::SHEETS as $type => $definition) {
+        foreach ($only === null ? CatalogImporter::SHEETS : array_intersect_key(CatalogImporter::SHEETS, array_flip($only)) as $type => $definition) {
             $sheet = $first ? $writer->getCurrentSheet() : $writer->addNewSheetAndMakeItCurrent();
             $first = false;
             $sheet->setName($definition['title']);
@@ -193,6 +199,7 @@ class CatalogSpreadsheet
                         $v->model->category?->name, $v->model->code, $v->model->name, $v->model->kind->value, $percent($v->model->default_margin_pct),
                         $v->color?->code, $v->color?->name, $v->size?->code, $v->sku, $v->name, $v->min_stock, $percent($v->margin_pct),
                         $yesNo($v->is_active), $v->skuAliases->pluck('alias')->implode(', '),
+                        $v->packing_cost === null ? null : (float) $v->packing_cost,
                         $v->id, Spreadsheet::stamp($v->updated_at),
                         $cost ? (float) $cost->material_cost : null, $cost ? (float) $cost->labor_cost : null, $cost ? (float) $cost->total_cost : null,
                         $percent($price?->margin_pct), $price ? (float) $price->base_price : null, $price?->effective_from->toDateString(),

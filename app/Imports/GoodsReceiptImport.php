@@ -5,6 +5,7 @@ namespace App\Imports;
 use App\Enums\GoodsReceiptSource;
 use App\Models\GoodsReceipt;
 use App\Services\InventoryService;
+use App\Services\PricingService;
 use App\Support\DocumentNumber;
 use App\Support\Spreadsheet;
 use App\Support\SpreadsheetRow;
@@ -19,7 +20,7 @@ use Illuminate\Support\Str;
  */
 class GoodsReceiptImport extends RowImporter
 {
-    public function __construct(private InventoryService $inventory) {}
+    public function __construct(private InventoryService $inventory, private PricingService $pricing) {}
 
     public function title(): string
     {
@@ -36,7 +37,7 @@ class GoodsReceiptImport extends RowImporter
             'SUPPLIER' => ['supplier', '-', 'Belum ada = dibuat otomatis.'],
             'SKU VARIAN' => ['sku', 'Ya', 'SKU varian atau SKU BigSeller.'],
             'QTY' => ['qty', 'Ya', 'Bilangan bulat > 0.'],
-            'HARGA SATUAN' => ['unit_cost', '-', 'Harga pokok per pcs (opsional).'],
+            'HARGA SATUAN' => ['unit_cost', 'Beli Jadi', 'Harga beli per pcs. Wajib untuk sumber Beli Jadi: HPP & harga reseller produk beli jadi dihitung otomatis dari harga ini + packing + margin.'],
             'CATATAN' => ['note', '-', 'Diambil dari baris pertama dokumen.'],
         ];
     }
@@ -75,10 +76,10 @@ class GoodsReceiptImport extends RowImporter
             return;
         }
 
-        $items = collect($this->eachLine($rows, function (SpreadsheetRow $row): array {
+        $items = collect($this->eachLine($rows, function (SpreadsheetRow $row) use ($source): array {
             $row->requireText(['sku' => 'SKU VARIAN']);
             $qty = $row->number('qty', 'QTY', min: 1, required: true, integer: true);
-            $cost = $row->number('unit_cost', 'HARGA SATUAN', min: 0);
+            $cost = $row->number('unit_cost', 'HARGA SATUAN', min: 0, required: $source === GoodsReceiptSource::BeliJadi);
             $row->throwIfInvalid();
 
             return ['variant_id' => $this->variant($row->text('sku'))->id, 'qty' => (int) $qty, 'unit_cost' => $cost];
@@ -107,6 +108,12 @@ class GoodsReceiptImport extends RowImporter
             'note' => $first->text('note') ?: self::NOTE,
         ], $items);
         $this->bump('created');
+
+        if ($source === GoodsReceiptSource::BeliJadi) {
+            foreach ($this->pricing->syncForReadyMade(array_column($items, 'variant_id'), $date)['skipped'] as $skipped) {
+                $this->warn("harga beli jadi {$skipped}");
+            }
+        }
     }
 
     /**

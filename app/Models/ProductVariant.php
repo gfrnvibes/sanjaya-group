@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\ProductKind;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -12,7 +13,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 /**
  * SKU VARIAN, mis. BC1HS (model + warna + ukuran).
  */
-#[Fillable(['model_id', 'color_id', 'size_id', 'sku', 'name', 'min_stock', 'margin_pct', 'is_active'])]
+#[Fillable(['model_id', 'color_id', 'size_id', 'sku', 'name', 'min_stock', 'margin_pct', 'packing_cost', 'is_active'])]
 class ProductVariant extends Model
 {
     use SoftDeletes;
@@ -22,8 +23,19 @@ class ProductVariant extends Model
         return [
             'min_stock' => 'integer',
             'margin_pct' => 'decimal:4',
+            'packing_cost' => 'decimal:2',
             'is_active' => 'boolean',
         ];
+    }
+
+    /**
+     * Produk beli jadi: HPP dari harga beli + packing, bukan dari resep.
+     */
+    public function isReadyMade(): bool
+    {
+        $this->loadMissing('model');
+
+        return $this->model?->kind === ProductKind::BeliJadi;
     }
 
     /** @return BelongsTo<ProductModel, $this> */
