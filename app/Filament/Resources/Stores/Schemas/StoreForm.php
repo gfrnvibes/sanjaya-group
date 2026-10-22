@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Stores\Schemas;
 
+use App\Models\Store;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
@@ -20,12 +21,14 @@ class StoreForm
                     ->columnSpanFull()
                     ->schema([
                         Select::make('reseller_id')
+                            ->disabled(fn (?Store $record): bool => $record?->salesOrders()->exists() ?? false)
                             ->label('Reseller')
                             ->relationship('reseller', 'name')
                             ->searchable()
                             ->preload()
                             ->required(),
                         Select::make('channel_id')
+                            ->disabled(fn (?Store $record): bool => $record?->salesOrders()->exists() ?? false)
                             ->label('Channel')
                             ->relationship('channel', 'name')
                             ->preload()

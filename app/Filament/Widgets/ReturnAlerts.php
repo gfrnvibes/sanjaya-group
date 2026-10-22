@@ -5,6 +5,7 @@ namespace App\Filament\Widgets;
 use App\Filament\Pages\SalesDashboard;
 use App\Models\Setting;
 use App\Services\SalesDashboardService;
+use App\Support\ApplicationAccess;
 use Filament\Actions\Action;
 use Filament\Support\Enums\TextSize;
 use Filament\Support\Icons\Heroicon;
@@ -25,7 +26,7 @@ class ReturnAlerts extends TableWidget
 
     public static function canView(): bool
     {
-        return self::alerts()->isNotEmpty();
+        return ApplicationAccess::allows('lihat laporan') && self::alerts()->isNotEmpty();
     }
 
     /**

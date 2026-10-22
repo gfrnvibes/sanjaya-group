@@ -13,3 +13,5 @@ Schedule::command('report:weekly-dashboard')
     ->weeklyOn(1, '07:00')
     ->timezone('Asia/Jakarta')
     ->withoutOverlapping();
+
+Schedule::command('database:backup')->dailyAt('02:00')->timezone('Asia/Jakarta')->withoutOverlapping(30)->when(fn (): bool => config('business.backup_enabled') && config('database.default') === 'pgsql');

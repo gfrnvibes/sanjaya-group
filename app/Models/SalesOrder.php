@@ -12,7 +12,7 @@ use Illuminate\Database\Eloquent\Relations\HasOneThrough;
 /**
  * 1 pesanan / resi per toko. Reseller & pemilik diturunkan dari store (tidak disalin).
  */
-#[Fillable(['store_id', 'warehouse_id', 'order_no', 'order_date', 'status', 'buyer_name', 'platform_fee', 'shipping_fee', 'import_batch_id', 'note', 'created_by'])]
+#[Fillable(['store_id', 'warehouse_id', 'order_no', 'order_date', 'status', 'buyer_name', 'platform_fee', 'shipping_fee', 'import_batch_id', 'note', 'created_by', 'import_key'])]
 class SalesOrder extends Model
 {
     protected $attributes = [
@@ -32,7 +32,7 @@ class SalesOrder extends Model
     /** @return BelongsTo<Store, $this> */
     public function store(): BelongsTo
     {
-        return $this->belongsTo(Store::class);
+        return $this->belongsTo(Store::class)->withTrashed();
     }
 
     /** @return HasOneThrough<Reseller, Store, $this> */

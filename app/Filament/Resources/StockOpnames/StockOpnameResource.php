@@ -50,12 +50,12 @@ class StockOpnameResource extends Resource
 
     public static function canEdit(Model $record): bool
     {
-        return $record->status === StockOpnameStatus::Draft;
+        return parent::canEdit($record) && $record->status === StockOpnameStatus::Draft;
     }
 
     public static function canDelete(Model $record): bool
     {
-        return $record->status === StockOpnameStatus::Draft;
+        return parent::canDelete($record) && $record->status === StockOpnameStatus::Draft;
     }
 
     public static function getPages(): array

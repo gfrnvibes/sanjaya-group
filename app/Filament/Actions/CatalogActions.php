@@ -5,6 +5,7 @@ namespace App\Filament\Actions;
 use App\Filament\Support\ImportResultNotification;
 use App\Services\CatalogImporter;
 use App\Services\CatalogSpreadsheet;
+use App\Support\ApplicationAccess;
 use Filament\Actions\Action;
 use Filament\Actions\ActionGroup;
 use Filament\Support\Icons\Heroicon;
@@ -47,6 +48,7 @@ class CatalogActions
     public static function templateAction(): Action
     {
         return Action::make('downloadCatalogTemplate')
+            ->authorize(fn (): bool => ApplicationAccess::allows('kelola katalog') && ApplicationAccess::allows('kelola stok'))
             ->label('Unduh Template Katalog')
             ->icon(Heroicon::OutlinedDocumentArrowDown)
             ->action(fn (CatalogSpreadsheet $spreadsheet): BinaryFileResponse => response()
@@ -57,6 +59,7 @@ class CatalogActions
     public static function exportAction(string $name, string $label, string $format, ?string $sheet = null): Action
     {
         return Action::make($name)
+            ->authorize(fn (): bool => ApplicationAccess::allows('kelola katalog') && ApplicationAccess::allows('kelola stok'))
             ->label($label)
             ->action(fn (CatalogSpreadsheet $spreadsheet): BinaryFileResponse => response()
                 ->download(
@@ -69,6 +72,7 @@ class CatalogActions
     public static function importAction(): Action
     {
         return Action::make('importCatalog')
+            ->authorize(fn (): bool => ApplicationAccess::allows('kelola katalog') && ApplicationAccess::allows('kelola stok'))
             ->label('Import Katalog')
             ->icon(Heroicon::OutlinedArrowUpTray)
             ->modalHeading('Import Katalog Produk, Bahan & HPP')

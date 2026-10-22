@@ -10,6 +10,7 @@ use App\Models\Warehouse;
 use App\Models\WorkOrder;
 use App\Services\CostingService;
 use App\Services\WorkOrderService;
+use App\Support\ApplicationAccess;
 use Filament\Actions\Action;
 use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\Repeater;
@@ -102,6 +103,7 @@ class ProductionPriorityTable extends DashboardTableWidget
     private function createWorkOrderAction(): Action
     {
         return Action::make('createWorkOrder')
+            ->authorize(fn (): bool => ApplicationAccess::allows('kelola produksi'))
             ->label('Buat SPK dari Saran')
             ->icon(Heroicon::OutlinedClipboardDocumentList)
             ->color('primary')
@@ -115,7 +117,7 @@ class ProductionPriorityTable extends DashboardTableWidget
             })
             ->modalWidth('4xl')
             ->fillForm(fn (): array => [
-                'code' => 'SPK-'.now()->format('ymd').'-'.str_pad((string) (WorkOrder::query()->whereDate('created_at', today())->count() + 1), 2, '0', STR_PAD_LEFT),
+                'code' => null,
                 'cut_date' => today()->toDateString(),
                 'warehouse_id' => Warehouse::defaultForMaterials()?->id,
                 'goods_warehouse_id' => Warehouse::defaultForGoods()?->id,
@@ -126,7 +128,7 @@ class ProductionPriorityTable extends DashboardTableWidget
                     ->all(),
             ])
             ->schema([
-                TextInput::make('code')->label('No. SPK')->required()->maxLength(30)->unique(WorkOrder::class, 'code'),
+                TextInput::make('code')->label('No. SPK')->helperText('Kosong = nomor otomatis')->maxLength(30)->unique(WorkOrder::class, 'code'),
                 DatePicker::make('cut_date')->label('Tanggal Potong')->required(),
                 Select::make('warehouse_id')->label('Gudang Bahan (dipotong)')->options(fn (): array => Warehouse::materialOptions())->required(),
                 Select::make('goods_warehouse_id')->label('Gudang Barang Jadi (hasil)')->options(fn (): array => Warehouse::goodsOptions())->required(),

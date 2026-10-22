@@ -20,6 +20,7 @@ use App\Models\Reseller;
 use App\Models\Store;
 use App\Services\SalesDashboardExporter;
 use App\Services\SalesDashboardService;
+use App\Support\ApplicationAccess;
 use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Actions\ActionGroup;
@@ -41,6 +42,11 @@ use UnitEnum;
  */
 class SalesDashboard extends Dashboard
 {
+    public static function canAccess(): bool
+    {
+        return ApplicationAccess::allows('lihat laporan');
+    }
+
     use HasFiltersForm;
 
     protected static string $routePath = 'dashboard-produk';

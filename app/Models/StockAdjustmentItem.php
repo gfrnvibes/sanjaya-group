@@ -31,7 +31,7 @@ class StockAdjustmentItem extends Model
     /** @return BelongsTo<ProductVariant, $this> */
     public function variant(): BelongsTo
     {
-        return $this->belongsTo(ProductVariant::class, 'variant_id');
+        return $this->belongsTo(ProductVariant::class, 'variant_id')->withTrashed();
     }
 
     /** @return MorphMany<StockMovement, $this> */

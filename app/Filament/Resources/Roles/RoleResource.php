@@ -49,6 +49,7 @@ class RoleResource extends Resource
                 Select::make('permissions')
                     ->label('Izin')
                     ->relationship('permissions', 'name')
+                    ->saveRelationshipsUsing(fn (Role $record, ?array $state) => $record->syncPermissions(array_map('intval', $state ?? [])))
                     ->multiple()
                     ->preload()
                     ->createOptionForm([

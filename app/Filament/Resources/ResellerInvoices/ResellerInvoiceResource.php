@@ -62,7 +62,7 @@ class ResellerInvoiceResource extends Resource
 
     public static function canEdit(Model $record): bool
     {
-        return $record->status === ResellerInvoiceStatus::Draft;
+        return parent::canEdit($record) && $record->status === ResellerInvoiceStatus::Draft;
     }
 
     public static function canDelete(Model $record): bool

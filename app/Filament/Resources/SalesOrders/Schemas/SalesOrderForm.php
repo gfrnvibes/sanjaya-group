@@ -35,8 +35,7 @@ class SalesOrderForm
                             ->columnSpan(2),
                         TextInput::make('order_no')
                             ->label('No. Pesanan')
-                            ->default(fn (): string => 'ORD-'.now()->format('ymdHis'))
-                            ->required()
+                            ->helperText('Kosong = nomor otomatis saat disimpan.')
                             ->maxLength(60)
                             ->disabledOn('edit'),
                         DatePicker::make('order_date')

@@ -26,7 +26,7 @@ class ResellerPayment extends Model
     /** @return BelongsTo<Reseller, $this> */
     public function reseller(): BelongsTo
     {
-        return $this->belongsTo(Reseller::class);
+        return $this->belongsTo(Reseller::class)->withTrashed();
     }
 
     /** @return BelongsTo<CashAccount, $this> */

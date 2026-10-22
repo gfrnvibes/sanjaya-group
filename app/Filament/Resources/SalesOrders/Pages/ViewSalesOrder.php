@@ -27,7 +27,13 @@ class ViewSalesOrder extends ViewRecord
                 ->visible(fn (SalesOrder $record): bool => $record->status === SalesOrderStatus::Pending)
                 ->requiresConfirmation()
                 ->action(function (SalesOrder $record): void {
-                    $record->update(['status' => SalesOrderStatus::Completed]);
+                    try {
+                        app(SalesOrderService::class)->completePending($record);
+                    } catch (BusinessRuleException $exception) {
+                        Notification::make()->title($exception->getMessage())->warning()->send();
+
+                        return;
+                    }
 
                     Notification::make()->title('Pesanan selesai')->success()->send();
                 }),

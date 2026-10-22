@@ -7,8 +7,8 @@ use App\Models\ProductCategory;
 use App\Models\Reseller;
 use App\Models\Store;
 use App\Support\Spreadsheet;
+use App\Support\SpreadsheetCells;
 use Illuminate\Support\Collection;
-use OpenSpout\Common\Entity\Cell;
 use OpenSpout\Common\Entity\Row;
 use OpenSpout\Common\Entity\Style\Style;
 use OpenSpout\Writer\AbstractWriterMultiSheets;
@@ -55,9 +55,9 @@ class SalesDashboardExporter
         $sheet->setName('Ringkasan');
         $sheet->setColumnWidth(38, 1);
         $sheet->setColumnWidth(22, 2);
-        $writer->addRow(Row::fromValues(['DASHBOARD PRODUK TERLARIS & PRIORITAS PRODUKSI'], (new Style)->setFontBold()->setFontSize(13)));
-        $writer->addRow(Row::fromValues(['Dibuat', now()->format('Y-m-d H:i')]));
-        $writer->addRow(Row::fromValues([]));
+        $writer->addRow(SpreadsheetCells::row(['DASHBOARD PRODUK TERLARIS & PRIORITAS PRODUKSI'], (new Style)->setFontBold()->setFontSize(13)));
+        $writer->addRow(SpreadsheetCells::row(['Dibuat', now()->format('Y-m-d H:i')]));
+        $writer->addRow(SpreadsheetCells::row([]));
         foreach ([
             ['Periode analisa (hari)', $p['days']],
             ['Periode', $p['start']->toDateString().' s.d. '.$p['end']->toDateString()],
@@ -82,7 +82,7 @@ class SalesDashboardExporter
             ['Nilai retur', $r['value']],
             ['Retur kembali ke stok (pcs)', $r['restocked']],
         ] as $line) {
-            $writer->addRow(new Row(array_map(fn ($value, int $i) => Cell::fromValue($value, match (true) {
+            $writer->addRow(new Row(array_map(fn ($value, int $i) => SpreadsheetCells::cell($value, match (true) {
                 $i >= 1 && $line[0] === 'Tingkat retur' => $percent,
                 $i >= 1 && is_numeric($value) => $money,
                 default => null,
@@ -172,7 +172,7 @@ class SalesDashboardExporter
 
         foreach ($rows->values() as $index => $row) {
             $writer->addRow(new Row(array_map(
-                fn ($value) => is_array($value) ? Cell::fromValue($value[0], $value[1]) : Cell::fromValue($value),
+                fn ($value) => is_array($value) ? SpreadsheetCells::cell($value[0], $value[1]) : SpreadsheetCells::cell($value),
                 $map($row, $index),
             )));
         }

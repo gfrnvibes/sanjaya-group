@@ -22,7 +22,7 @@ class OwnerTierHistory extends Model
     /** @return BelongsTo<Owner, $this> */
     public function owner(): BelongsTo
     {
-        return $this->belongsTo(Owner::class);
+        return $this->belongsTo(Owner::class)->withTrashed();
     }
 
     /** @return BelongsTo<PriceTier, $this> */

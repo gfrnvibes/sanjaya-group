@@ -14,6 +14,7 @@ use App\Models\Supplier;
 use App\Models\Tailor;
 use App\Models\Warehouse;
 use App\Support\Spreadsheet;
+use App\Support\SpreadsheetCells;
 use App\Support\SpreadsheetRow;
 use Closure;
 use Illuminate\Database\Eloquent\Builder;
@@ -22,7 +23,6 @@ use Illuminate\Database\QueryException;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
-use OpenSpout\Common\Entity\Row;
 use OpenSpout\Writer\XLSX\Writer as XlsxWriter;
 use Throwable;
 
@@ -208,7 +208,7 @@ abstract class RowImporter
             ->all()));
 
         foreach ($rows as $row) {
-            $writer->addRow(Row::fromValues($row));
+            $writer->addRow(SpreadsheetCells::row($row));
         }
 
         Spreadsheet::addSheet($writer, 'Petunjuk', [26, 16, 100], [
@@ -468,10 +468,11 @@ abstract class RowImporter
         } catch (BusinessRuleException $exception) {
             $this->errors[] = "{$where}: ".rtrim($exception->getMessage(), '.').'.';
         } catch (QueryException $exception) {
-            $this->errors[] = "{$where}: gagal disimpan (".Str::limit(strtok($exception->getMessage(), "\n") ?: 'kesalahan database', 160).').';
+            report($exception);
+            $this->errors[] = "{$where}: gagal disimpan. Periksa data atau hubungi administrator.";
         } catch (Throwable $exception) {
             report($exception);
-            $this->errors[] = "{$where}: terjadi kesalahan ({$exception->getMessage()}).";
+            $this->errors[] = "{$where}: terjadi kesalahan. Hubungi administrator.";
         }
 
         $this->pending = [];

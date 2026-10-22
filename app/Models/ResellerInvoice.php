@@ -33,7 +33,7 @@ class ResellerInvoice extends Model
     /** @return BelongsTo<Reseller, $this> */
     public function reseller(): BelongsTo
     {
-        return $this->belongsTo(Reseller::class);
+        return $this->belongsTo(Reseller::class)->withTrashed();
     }
 
     /** @return HasMany<SalesOrderItem, $this> */

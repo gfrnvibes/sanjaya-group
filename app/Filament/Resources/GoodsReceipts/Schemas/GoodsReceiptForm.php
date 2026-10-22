@@ -3,7 +3,6 @@
 namespace App\Filament\Resources\GoodsReceipts\Schemas;
 
 use App\Enums\GoodsReceiptSource;
-use App\Models\GoodsReceipt;
 use App\Models\ProductVariant;
 use App\Models\Warehouse;
 use Filament\Forms\Components\DateTimePicker;
@@ -27,8 +26,7 @@ class GoodsReceiptForm
                     ->schema([
                         TextInput::make('receipt_no')
                             ->label('No. Dokumen')
-                            ->default(fn (): string => 'BM-'.now()->format('ymd').'-'.str_pad((string) (GoodsReceipt::query()->whereDate('created_at', today())->count() + 1), 3, '0', STR_PAD_LEFT))
-                            ->required()
+                            ->helperText('Kosong = nomor otomatis saat disimpan.')
                             ->maxLength(40)
                             ->unique(ignoreRecord: true),
                         DateTimePicker::make('received_at')

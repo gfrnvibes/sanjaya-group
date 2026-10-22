@@ -7,7 +7,6 @@ use DateTimeImmutable;
 use DateTimeInterface;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
-use OpenSpout\Common\Entity\Cell;
 use OpenSpout\Common\Entity\Row;
 use OpenSpout\Common\Entity\Style\CellAlignment;
 use OpenSpout\Common\Entity\Style\Color;
@@ -59,12 +58,19 @@ class Spreadsheet
      */
     public static function readSheets(string $path, string $fileName, array $definitions, bool $firstSheetOnly = false): array
     {
-        $reader = self::reader($path, strtolower(pathinfo($fileName, PATHINFO_EXTENSION)));
-        $reader->open($path);
+        if (! is_file($path) || ! is_readable($path)) {
+            throw new BusinessRuleException('File import tidak ditemukan atau tidak dapat dibaca. Unggah ulang file.');
+        }
+        if (filesize($path) > config('business.import_max_bytes')) {
+            throw new BusinessRuleException('File terlalu besar. Pecah file sebelum import.');
+        }
 
+        $rowCount = 0;
+        $reader = self::reader($path, strtolower(pathinfo($fileName, PATHINFO_EXTENSION)));
         $result = [];
 
         try {
+            $reader->open($path);
             foreach ($reader->getSheetIterator() as $sheet) {
                 $line = 0;
                 $type = null;
@@ -102,6 +108,10 @@ class Spreadsheet
                         continue;
                     }
 
+                    if (++$rowCount > config('business.import_max_rows')) {
+                        throw new BusinessRuleException('Jumlah baris melebihi batas import '.config('business.import_max_rows').'. Pecah file menjadi beberapa bagian.');
+                    }
+
                     $result[$type][] = ['sheet' => $sheet->getName(), 'line' => $line, 'values' => $input];
                 }
 
@@ -109,6 +119,11 @@ class Spreadsheet
                     break;
                 }
             }
+        } catch (BusinessRuleException $exception) {
+            throw $exception;
+        } catch (\Throwable $exception) {
+            report($exception);
+            throw new BusinessRuleException('File spreadsheet rusak atau tidak dapat dibaca. Simpan ulang sebagai XLSX/CSV/ODS lalu unggah kembali.');
         } finally {
             $reader->close();
         }
@@ -167,6 +182,25 @@ class Spreadsheet
     public static function stamp(?DateTimeInterface $at): ?string
     {
         return $at === null ? null : Carbon::instance($at)->setTimezone(self::STAMP_TIMEZONE)->format('Y-m-d H:i:s');
+    }
+
+    public static function parseCountedAt(mixed $value): ?Carbon
+    {
+        if ($value instanceof DateTimeInterface) {
+            return Carbon::parse($value->format('Y-m-d H:i:s'), self::STAMP_TIMEZONE);
+        }
+        if (is_int($value) || is_float($value)) {
+            return Carbon::create(1899, 12, 30, 0, 0, 0, self::STAMP_TIMEZONE)->addSeconds((int) round($value * 86400));
+        }
+        $text = self::text($value);
+        foreach (['Y-m-d H:i:s', 'Y-m-d H:i', 'd/m/Y H:i:s', 'd/m/Y H:i', 'Y-m-d', 'd/m/Y'] as $format) {
+            $date = DateTimeImmutable::createFromFormat('!'.$format, $text);
+            if ($date !== false && $date->format($format) === $text) {
+                return Carbon::parse($date->format('Y-m-d H:i:s'), self::STAMP_TIMEZONE);
+            }
+        }
+
+        return null;
     }
 
     public static function parseStamp(mixed $value): ?Carbon
@@ -251,7 +285,7 @@ class Spreadsheet
         $cells = [];
 
         foreach ($columns as $label => $isInput) {
-            $cells[] = Cell::fromValue($label, (new Style)
+            $cells[] = SpreadsheetCells::cell($label, (new Style)
                 ->setFontBold()
                 ->setCellAlignment(CellAlignment::CENTER)
                 ->setFontColor($isInput ? Color::WHITE : Color::BLACK)
@@ -277,10 +311,10 @@ class Spreadsheet
         }
 
         $header = array_shift($rows);
-        $writer->addRow(Row::fromValues($header, (new Style)->setFontBold()->setBackgroundColor('D9D9D9')));
+        $writer->addRow(SpreadsheetCells::row($header, (new Style)->setFontBold()->setBackgroundColor('D9D9D9')));
 
         foreach ($rows as $row) {
-            $writer->addRow(Row::fromValues($row));
+            $writer->addRow(SpreadsheetCells::row($row));
         }
     }
 

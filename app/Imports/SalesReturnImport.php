@@ -31,6 +31,7 @@ class SalesReturnImport extends RowImporter
             'NO PESANAN' => ['order_no', 'Ya', 'No. pesanan di sistem (lihat menu Pesanan / export pesanan).'],
             'SKU VARIAN' => ['sku', 'Ya', 'SKU varian atau SKU BigSeller pada pesanan tersebut.'],
             'QTY' => ['qty', 'Ya', 'Maksimal sisa qty yang belum diretur.'],
+            'NILAI REFUND' => ['refund_amount', '-', 'Refund ke pembeli. Kosong = proporsional pendapatan pesanan.'],
             'ALASAN' => ['reason', '-', 'Cacat jahitan / Cacat bahan / Ukuran tidak sesuai / Salah kirim / Tidak sesuai foto / Rusak saat pengiriman / Pembeli berubah pikiran / Lainnya. Kosong = Lainnya.'],
             'MASUK STOK' => ['restock', '-', 'Ya / Tidak. Default Ya (barang kembali ke stok).'],
             'GUDANG' => ['warehouse', '-', 'Gudang tujuan bila masuk stok. Kosong = gudang asal pesanan.'],
@@ -51,6 +52,7 @@ class SalesReturnImport extends RowImporter
         $row->requireText(['store' => 'NAMA TOKO', 'order_no' => 'NO PESANAN', 'sku' => 'SKU VARIAN']);
         $date = $row->date('returned_at', 'TANGGAL RETUR', required: true);
         $qty = $row->number('qty', 'QTY', min: 1, required: true, integer: true);
+        $refund = $row->number('refund_amount', 'NILAI REFUND', min: 0);
         $reason = $row->enum('reason', ReturnReason::class, 'ALASAN', [
             'cacat jahit' => ReturnReason::CacatJahit, 'jahitan' => ReturnReason::CacatJahit,
             'cacat' => ReturnReason::CacatBahan, 'bahan' => ReturnReason::CacatBahan,
@@ -81,6 +83,7 @@ class SalesReturnImport extends RowImporter
             'returned_at' => $date,
             'qty' => (int) $qty,
             'reason' => $reason,
+            'refund_amount' => $refund,
             'restock' => $restock,
             'warehouse_id' => $restock && $row->filled('warehouse') ? $this->warehouse($row->text('warehouse'))->id : null,
             'credit_reseller' => $credit,

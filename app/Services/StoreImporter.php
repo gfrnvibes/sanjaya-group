@@ -11,13 +11,13 @@ use App\Models\PriceTier;
 use App\Models\Reseller;
 use App\Models\Store;
 use App\Support\Spreadsheet;
+use App\Support\SpreadsheetCells;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
-use OpenSpout\Common\Entity\Row;
 use OpenSpout\Writer\XLSX\Writer as XlsxWriter;
 
 /**
@@ -109,7 +109,8 @@ class StoreImporter
             } catch (BusinessRuleException $exception) {
                 $errors[] = "Baris {$line['line']}: ".rtrim($exception->getMessage(), '.').'.';
             } catch (QueryException $exception) {
-                $errors[] = "Baris {$line['line']}: gagal disimpan (".Str::limit(strtok($exception->getMessage(), "\n") ?: 'kesalahan database', 160).').';
+                report($exception);
+                $errors[] = "Baris {$line['line']}: gagal disimpan. Periksa data atau hubungi administrator.";
             }
         }
 
@@ -155,7 +156,7 @@ class StoreImporter
 
         if ($withData) {
             foreach ($this->exportRows() as $values) {
-                $writer->addRow(Row::fromValues($values));
+                $writer->addRow(SpreadsheetCells::row($values));
             }
         }
 

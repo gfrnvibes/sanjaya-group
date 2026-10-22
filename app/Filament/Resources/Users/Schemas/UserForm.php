@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Users\Schemas;
 
+use App\Models\User;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
@@ -54,6 +55,7 @@ class UserForm
                         Select::make('roles')
                             ->label('Peran')
                             ->relationship('roles', 'name')
+                            ->saveRelationshipsUsing(fn (User $record, ?array $state) => $record->syncRoles(array_map('intval', $state ?? [])))
                             ->multiple()
                             ->preload(),
                     ]),

@@ -8,9 +8,22 @@ use App\Models\SalesOrderItem;
 use App\Models\SalesReturn;
 use App\Models\StockAdjustmentItem;
 use App\Models\StockOpnameItem;
+use App\Models\User;
 use App\Models\WorkOrderItem;
+use App\Observers\BusinessRecordObserver;
+use App\Services\SalesDashboardService;
+use App\Support\ApplicationAccess;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\Relation;
+use Illuminate\Foundation\DevCommands;
+use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\ServiceProvider;
+use Spatie\Permission\Events\PermissionAttachedEvent;
+use Spatie\Permission\Events\PermissionDetachedEvent;
+use Spatie\Permission\Events\RoleAttachedEvent;
+use Spatie\Permission\Events\RoleDetachedEvent;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -19,7 +32,7 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        $this->app->scoped(SalesDashboardService::class);
     }
 
     /**
@@ -27,6 +40,41 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        if ($this->app->environment('local')) {
+            DevCommands::artisan('schedule:work', 'scheduler');
+        }
+
+        Gate::before(function (User $user, string $ability, array $arguments): ?bool {
+            if (! $user->is_active || ! $user->isKonveksiStaff()) {
+                return false;
+            }
+
+            $model = $arguments[0] ?? null;
+
+            if ($model instanceof Model || (is_string($model) && is_subclass_of($model, Model::class))) {
+                return ApplicationAccess::model($ability, $model, $user);
+            }
+
+            return null;
+        });
+
+        foreach (File::files(app_path('Models')) as $file) {
+            $class = 'App\\Models\\'.$file->getFilenameWithoutExtension();
+
+            if (is_subclass_of($class, Model::class) && ! (new \ReflectionClass($class))->isAbstract()) {
+                $class::observe(BusinessRecordObserver::class);
+            }
+        }
+
+        foreach ([RoleAttachedEvent::class, RoleDetachedEvent::class, PermissionAttachedEvent::class, PermissionDetachedEvent::class] as $eventClass) {
+            Event::listen($eventClass, function ($event): void {
+                $values = $event->rolesOrIds ?? $event->permissionsOrIds ?? [];
+                $ids = collect($values instanceof Model ? [$values] : $values)->map(fn ($value) => $value instanceof Model ? $value->getKey() : $value)->values()->all();
+                activity('access')->performedOn($event->model)->causedBy(auth()->user())->event(class_basename($event))
+                    ->withProperties(['ids' => $ids, 'origin' => app()->runningInConsole() ? 'console' : 'web'])->log(class_basename($event));
+            });
+        }
+
         // Alias pendek & stabil untuk kolom source_type di ledger stok/bahan.
         Relation::morphMap([
             'goods_receipt_item' => GoodsReceiptItem::class,

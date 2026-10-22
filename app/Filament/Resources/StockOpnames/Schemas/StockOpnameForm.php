@@ -40,7 +40,7 @@ class StockOpnameForm
                             ->columnSpanFull(),
                     ]),
                 Section::make('Hasil Hitung')
-                    ->description('Stok sistem diambil ulang saat posting. Selisih (fisik - sistem) dicatat ke kartu stok.')
+                    ->description('Stok sistem dihitung pada waktu hitung fisik. Mutasi setelah waktu hitung tetap dipertahankan. Selisih (fisik - sistem) dicatat ke kartu stok.')
                     ->columnSpanFull()
                     ->schema([
                         Repeater::make('items')

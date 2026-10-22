@@ -24,6 +24,13 @@ use Illuminate\Support\Facades\DB;
  */
 class SalesDashboardService
 {
+    private array $computed = [];
+
+    public function forget(): void
+    {
+        $this->computed = [];
+    }
+
     public const PRIORITY_ORDER = ['1 HABIS' => 1, '2 SEGERA' => 2, '3 PERLU' => 3, 'AMAN' => 4, '-' => 5];
 
     public function __construct(private CostingService $costing) {}
@@ -54,9 +61,7 @@ class SalesDashboardService
     public function build(array $params): array
     {
         // Banyak widget memakai hasil yang sama dalam 1 request: hitung sekali per kombinasi pengaturan.
-        static $memo = [];
-
-        return $memo[$this->key($params)] ??= $this->compute($params);
+        return $this->computed['dashboard:'.$this->key($params)] ??= $this->compute($params);
     }
 
     /**
@@ -67,9 +72,7 @@ class SalesDashboardService
      */
     public function materialNeeds(array $params): array
     {
-        static $memo = [];
-
-        return $memo[$this->key($params)] ??= $this->computeMaterialNeeds($this->build($params));
+        return $this->computed['materials:'.$this->key($params)] ??= $this->computeMaterialNeeds($this->build($params));
     }
 
     // ------------------------------------------------------------------ perhitungan

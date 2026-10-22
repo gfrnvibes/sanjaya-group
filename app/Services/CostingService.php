@@ -50,8 +50,7 @@ class CostingService
     }
 
     /**
-     * Harga per satuan dasar: pembelian terakhir s.d. tanggal; bila belum ada, harga stok awal,
-     * lalu pembelian pertama sesudahnya (agar HPP resep lama tidak jadi Rp 0).
+     * Harga per satuan dasar dari pembelian atau stok awal yang sudah berlaku pada tanggal tersebut.
      */
     public function latestUnitCost(Material $material, CarbonInterface|string $date): string
     {
@@ -69,13 +68,13 @@ class CostingService
             ->orderByDesc('material_purchases.purchase_date')
             ->orderByDesc('material_purchase_items.id')
             ->value('material_purchase_items.unit_cost')
-            ?? $openingCost()->orderByDesc('moved_at')->value('unit_cost')
-            ?? $purchases()
-                ->orderBy('material_purchases.purchase_date')
-                ->orderBy('material_purchase_items.id')
-                ->value('material_purchase_items.unit_cost');
+            ?? $openingCost()->where('moved_at', '<', Carbon::parse($date)->addDay()->startOfDay())->orderByDesc('moved_at')->value('unit_cost');
 
-        return (string) ($cost ?? '0');
+        if ($cost === null) {
+            throw new BusinessRuleException("Harga bahan {$material->code} belum tersedia pada tanggal tersebut.");
+        }
+
+        return (string) $cost;
     }
 
     /**

@@ -3,6 +3,7 @@
 namespace App\Providers\Filament;
 
 use App\Filament\Pages\SalesDashboard;
+use App\Http\Controllers\DownloadPaymentProof;
 use App\Http\Controllers\DownloadSalesImportFailures;
 use Filament\Http\Middleware\Authenticate;
 use Filament\Http\Middleware\AuthenticateSession;
@@ -34,6 +35,7 @@ class AdministratorPanelProvider extends PanelProvider
             ->id('administrator')
             ->path('administrator')
             ->login()
+            ->databaseTransactions()
             ->brandName('Sanjaya Konveksi')
             ->colors([
                 'primary' => Color::Amber,
@@ -51,6 +53,7 @@ class AdministratorPanelProvider extends PanelProvider
                 NavigationGroup::make('Pengaturan')->collapsed(),
             ])
             ->authenticatedRoutes(function (): void {
+                Route::get('payment-proofs/{payment}', DownloadPaymentProof::class)->name('payment-proofs.download');
                 Route::get('import-gagal/unduh', DownloadSalesImportFailures::class)->name('sales-import-failures.download');
             })
             ->discoverResources(in: app_path('Filament/Resources'), for: 'App\Filament\Resources')

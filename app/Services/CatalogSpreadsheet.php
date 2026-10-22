@@ -14,6 +14,7 @@ use App\Models\ProductVariant;
 use App\Models\Size;
 use App\Models\Warehouse;
 use App\Support\Spreadsheet;
+use App\Support\SpreadsheetCells;
 use Illuminate\Support\Collection;
 use OpenSpout\Common\Entity\Row;
 use OpenSpout\Writer\AbstractWriterMultiSheets;
@@ -110,7 +111,7 @@ class CatalogSpreadsheet
             $writer = new CsvWriter;
             $writer->openToFile($path);
             $writer->addRow($this->headerRow($sheet, withAuto: true));
-            $this->rows($sheet)->each(fn (array $row) => $writer->addRow(Row::fromValues($row)));
+            $this->rows($sheet)->each(fn (array $row) => $writer->addRow(SpreadsheetCells::row($row, csv: true)));
             $writer->close();
 
             return $path;
@@ -155,7 +156,7 @@ class CatalogSpreadsheet
             $writer->addRow($this->headerRow($type, $withAuto));
 
             foreach ($rows($type) as $row) {
-                $writer->addRow(Row::fromValues($row));
+                $writer->addRow(SpreadsheetCells::row($row));
             }
         }
     }

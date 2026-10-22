@@ -23,7 +23,7 @@ class Bom extends Model
     /** @return BelongsTo<ProductModel, $this> */
     public function model(): BelongsTo
     {
-        return $this->belongsTo(ProductModel::class, 'model_id');
+        return $this->belongsTo(ProductModel::class, 'model_id')->withTrashed();
     }
 
     /** @return BelongsTo<Size, $this> */

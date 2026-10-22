@@ -60,11 +60,14 @@ class WorkOrderService
 
     public function startSewing(WorkOrder $workOrder): void
     {
-        if ($workOrder->status !== WorkOrderStatus::Cutting) {
-            throw new BusinessRuleException('Hanya SPK berstatus Dipotong yang bisa masuk jahit.');
-        }
-
-        $workOrder->update(['status' => WorkOrderStatus::Sewing]);
+        DB::transaction(function () use ($workOrder): void {
+            $locked = WorkOrder::query()->lockForUpdate()->findOrFail($workOrder->id);
+            if ($locked->status !== WorkOrderStatus::Cutting) {
+                throw new BusinessRuleException('Hanya SPK berstatus Dipotong yang bisa masuk jahit.');
+            }
+            $locked->update(['status' => WorkOrderStatus::Sewing]);
+        });
+        $workOrder->refresh();
     }
 
     /**
@@ -72,16 +75,20 @@ class WorkOrderService
      */
     public function complete(WorkOrder $workOrder, array $results, string $finishedDate): void
     {
-        if (! in_array($workOrder->status, [WorkOrderStatus::Cutting, WorkOrderStatus::Sewing], true)) {
-            throw new BusinessRuleException('SPK sudah selesai atau batal.');
-        }
-
         DB::transaction(function () use ($workOrder, $results, $finishedDate): void {
-            foreach ($workOrder->items as $item) {
-                $result = $results[$item->id] ?? ['qty_good' => $item->qty_cut, 'qty_reject' => 0];
+            $workOrder = WorkOrder::query()->lockForUpdate()->findOrFail($workOrder->id);
+            if (! in_array($workOrder->status, [WorkOrderStatus::Cutting, WorkOrderStatus::Sewing], true)) {
+                throw new BusinessRuleException('SPK sudah selesai atau batal.');
+            }
 
-                if ($result['qty_good'] + $result['qty_reject'] > $item->qty_cut) {
-                    throw new BusinessRuleException("Qty jadi + reject {$item->variant->sku} melebihi qty potong.");
+            if (Carbon::parse($finishedDate)->lt($workOrder->cut_date)) {
+                throw new BusinessRuleException('Tanggal selesai tidak boleh sebelum tanggal potong.');
+            }
+            foreach ($workOrder->items as $item) {
+                $result = $results[$item->id] ?? throw new BusinessRuleException('Hasil semua varian wajib diisi.');
+
+                if ($result['qty_good'] < 0 || $result['qty_reject'] < 0 || $item->qty_cut !== $result['qty_good'] + $result['qty_reject']) {
+                    throw new BusinessRuleException("Qty jadi + reject {$item->variant->sku} harus sama dengan qty potong.");
                 }
 
                 $item->update(['qty_good' => $result['qty_good'], 'qty_reject' => $result['qty_reject']]);
@@ -108,6 +115,13 @@ class WorkOrderService
             throw new BusinessRuleException('SPK sudah selesai atau batal.');
         }
 
-        $workOrder->update(['status' => WorkOrderStatus::Cancelled]);
+        DB::transaction(function () use ($workOrder): void {
+            $locked = WorkOrder::query()->lockForUpdate()->findOrFail($workOrder->id);
+            if (! in_array($locked->status, [WorkOrderStatus::Cutting, WorkOrderStatus::Sewing], true)) {
+                throw new BusinessRuleException('SPK sudah selesai atau batal.');
+            }
+            $locked->update(['status' => WorkOrderStatus::Cancelled]);
+        });
+        $workOrder->refresh();
     }
 }

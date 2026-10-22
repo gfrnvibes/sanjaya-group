@@ -99,6 +99,7 @@ class ItemsRelationManager extends RelationManager
                             ->label('Alasan Retur')
                             ->options(ReturnReason::class)
                             ->required(),
+                        TextInput::make('refund_amount')->label('Refund ke Pembeli')->numeric()->minValue(0)->helperText('Kosong = pendapatan dibagi proporsional qty retur.'),
                         Toggle::make('restock')
                             ->label('Barang kembali ke stok')
                             ->default(true)

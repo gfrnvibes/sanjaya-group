@@ -6,10 +6,12 @@ use App\Enums\ResellerInvoiceStatus;
 use App\Enums\SalesOrderStatus;
 use App\Enums\StockMovementType;
 use App\Exceptions\BusinessRuleException;
+use App\Models\ProductVariant;
 use App\Models\SalesOrder;
 use App\Models\SalesOrderItem;
 use App\Models\SalesReturn;
 use App\Models\Store;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -34,9 +36,20 @@ class SalesOrderService
 
         return DB::transaction(function () use ($data, $items): SalesOrder {
             $order = SalesOrder::create([...$data, 'created_by' => auth()->id()]);
-            $ownerId = Store::query()->with('reseller')->findOrFail($order->store_id)->reseller->owner_id;
+            $store = Store::query()->with('reseller.owner')->findOrFail($order->store_id);
+            if (! $store->is_active || $store->trashed() || ! $store->reseller?->is_active || $store->reseller->trashed() || ! $store->reseller->owner?->is_active || $store->reseller->owner->trashed()) {
+                throw new BusinessRuleException('Toko, reseller, atau pemilik tidak aktif.');
+            }
+            $ownerId = $store->reseller->owner_id;
 
             foreach ($items as $row) {
+                if ((int) $row['qty'] < 1 || (float) $row['qty'] !== (float) (int) $row['qty']) {
+                    throw new BusinessRuleException('Qty penjualan harus bilangan bulat minimal 1.');
+                }
+                $variant = ProductVariant::query()->find($row['variant_id']);
+                if (! $variant?->is_active) {
+                    throw new BusinessRuleException('SKU tidak ditemukan atau tidak aktif.');
+                }
                 $snapshot = $this->pricing->snapshot((int) $row['variant_id'], $ownerId, $order->order_date);
                 $item = $order->items()->create([
                     'variant_id' => $row['variant_id'],
@@ -63,23 +76,25 @@ class SalesOrderService
      */
     public function cancel(SalesOrder $order): void
     {
-        if ($order->status === SalesOrderStatus::Cancelled) {
-            throw new BusinessRuleException('Pesanan sudah dibatalkan.');
-        }
-
-        $order->loadMissing(['items.returns', 'items.invoice']);
-
-        foreach ($order->items as $item) {
-            if ($item->returns->isNotEmpty()) {
-                throw new BusinessRuleException('Pesanan yang sudah ada retur tidak bisa dibatalkan.');
-            }
-
-            if ($item->invoice && $item->invoice->status === ResellerInvoiceStatus::Issued) {
-                throw new BusinessRuleException("Pesanan sudah masuk tagihan terbit {$item->invoice->invoice_no}.");
-            }
-        }
-
         DB::transaction(function () use ($order): void {
+            DB::select("SELECT pg_advisory_xact_lock(hashtextextended('sales-documents', 0))");
+            $order = SalesOrder::query()->lockForUpdate()->findOrFail($order->id);
+            if ($order->status === SalesOrderStatus::Cancelled) {
+                throw new BusinessRuleException('Pesanan sudah dibatalkan.');
+            }
+
+            $order->loadMissing(['items.returns', 'items.invoice']);
+
+            foreach ($order->items as $item) {
+                if ($item->returns->isNotEmpty()) {
+                    throw new BusinessRuleException('Pesanan yang sudah ada retur tidak bisa dibatalkan.');
+                }
+
+                if ($item->invoice && $item->invoice->status === ResellerInvoiceStatus::Issued) {
+                    throw new BusinessRuleException("Pesanan sudah masuk tagihan terbit {$item->invoice->invoice_no}.");
+                }
+            }
+
             foreach ($order->items as $item) {
                 $this->ledger->moveStock(
                     $item->variant_id, $order->warehouse_id, $item->qty, StockMovementType::SaleCancel,
@@ -89,6 +104,36 @@ class SalesOrderService
             }
 
             $order->update(['status' => SalesOrderStatus::Cancelled]);
+        });
+    }
+
+    public function completePending(SalesOrder $order): void
+    {
+        DB::transaction(function () use ($order): void {
+            DB::select("SELECT pg_advisory_xact_lock(hashtextextended('sales-documents', 0))");
+            $locked = SalesOrder::query()->lockForUpdate()->findOrFail($order->id);
+            if ($locked->status !== SalesOrderStatus::Pending) {
+                throw new BusinessRuleException('Status pesanan sudah berubah. Muat ulang halaman.');
+            }
+            $locked->update(['status' => SalesOrderStatus::Completed]);
+        });
+        $order->refresh();
+    }
+
+    public function reviseImported(SalesOrder $order, int $qty, ?float $revenue): void
+    {
+        DB::transaction(function () use ($order, $qty, $revenue): void {
+            DB::select("SELECT pg_advisory_xact_lock(hashtextextended('sales-documents', 0))");
+            $order = SalesOrder::query()->lockForUpdate()->findOrFail($order->id);
+            $item = $order->items()->lockForUpdate()->sole();
+            if ($order->import_batch_id === null || $order->status === SalesOrderStatus::Cancelled || $qty < 1 || $item->reseller_invoice_id !== null || $item->returns()->exists()) {
+                throw new BusinessRuleException('Pesanan batal, sudah ditagih, atau sudah diretur tidak bisa dikoreksi lewat impor.');
+            }
+            $delta = $qty - $item->qty;
+            if ($delta !== 0) {
+                $this->ledger->moveStock($item->variant_id, $order->warehouse_id, -$delta, StockMovementType::Adjustment, $item, $item->hpp_unit, 'Koreksi jumlah impor', $order->order_date);
+            }
+            $item->update(['qty' => $qty, 'revenue' => $revenue]);
         });
     }
 
@@ -102,21 +147,34 @@ class SalesOrderService
      */
     public function registerReturn(SalesOrderItem $item, array $data): SalesReturn
     {
-        $order = $item->salesOrder;
+        return DB::transaction(function () use ($item, $data): SalesReturn {
+            DB::select("SELECT pg_advisory_xact_lock(hashtextextended('sales-documents', 0))");
+            $order = SalesOrder::query()->lockForUpdate()->findOrFail($item->sales_order_id);
+            $item = SalesOrderItem::query()->lockForUpdate()->findOrFail($item->id);
+            if (! isset($data['qty']) || (int) $data['qty'] < 1 || (float) $data['qty'] !== (float) (int) $data['qty']) {
+                throw new BusinessRuleException('Qty retur minimal 1.');
+            }
+            if (Carbon::parse($data['returned_at'])->lt($order->order_date)) {
+                throw new BusinessRuleException('Tanggal retur tidak boleh sebelum tanggal pesanan.');
+            }
 
-        if ($order->status === SalesOrderStatus::Cancelled) {
-            throw new BusinessRuleException('Pesanan batal tidak bisa diretur.');
-        }
+            if ($order->status === SalesOrderStatus::Cancelled) {
+                throw new BusinessRuleException('Pesanan batal tidak bisa diretur.');
+            }
 
-        $returnable = $this->returnableQty($item);
+            $returnable = $this->returnableQty($item);
 
-        if ((int) $data['qty'] > $returnable) {
-            throw new BusinessRuleException("Qty retur melebihi sisa yang bisa diretur ({$returnable}).");
-        }
+            if ((int) $data['qty'] > $returnable) {
+                throw new BusinessRuleException("Qty retur melebihi sisa yang bisa diretur ({$returnable}).");
+            }
 
-        return DB::transaction(function () use ($item, $order, $data): SalesReturn {
+            $refund = $data['refund_amount'] ?? ($item->revenue === null ? null : round((float) $item->revenue * (int) $data['qty'] / $item->qty, 2));
+            if ($refund !== null && ($refund < 0 || ($item->revenue !== null && (float) $item->returns()->sum('refund_amount') + $refund > (float) $item->revenue + 0.001))) {
+                throw new BusinessRuleException('Nilai refund tidak boleh negatif atau melebihi pendapatan pesanan.');
+            }
             $return = $item->returns()->create([
                 ...$data,
+                'refund_amount' => $refund,
                 'warehouse_id' => ($data['restock'] ?? false) ? ($data['warehouse_id'] ?? $order->warehouse_id) : null,
                 'created_by' => auth()->id(),
             ]);

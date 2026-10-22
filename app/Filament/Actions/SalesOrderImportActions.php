@@ -10,6 +10,7 @@ use App\Models\SalesImportBatch;
 use App\Models\Warehouse;
 use App\Services\SalesOrderImporter;
 use App\Services\SalesOrderSpreadsheet;
+use App\Support\ApplicationAccess;
 use Filament\Actions\Action;
 use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\FileUpload;
@@ -28,6 +29,7 @@ class SalesOrderImportActions
     public static function templateAction(): Action
     {
         return Action::make('downloadTemplate')
+            ->authorize(fn (): bool => ApplicationAccess::allows('kelola penjualan'))
             ->label('Unduh Template')
             ->icon(Heroicon::OutlinedDocumentArrowDown)
             ->action(fn (SalesOrderSpreadsheet $spreadsheet): BinaryFileResponse => response()
@@ -38,13 +40,15 @@ class SalesOrderImportActions
     public static function importAction(): Action
     {
         return Action::make('import')
+            ->authorize(fn (): bool => ApplicationAccess::allows('kelola penjualan'))
             ->label('Import Excel')
             ->icon(Heroicon::OutlinedArrowUpTray)
             ->modalHeading('Import Pesanan dari Excel')
-            ->modalDescription('Bisa beberapa file sekaligus (1 file = 1 batch impor), termasuk file baris gagal yang sudah diperbaiki. Format template (TANGGAL, NAMA TOKO, SKU VARIAN / SKU BIG SELLER, QTY, PENDAPATAN TOKO) atau file export BigSeller (Nama Toko, Nomor SKU Toko, Penjualan Produk Valid, Dana Penjualan Produk Valid + kolom TANGGAL di belakang). Harga reseller, margin, dan total tagihan dihitung otomatis. Baris valid disimpan; baris gagal dicatat beserta alasannya di menu Import Gagal. Baris yang sama persis dengan pesanan yang sudah ada dilewati.')
+            ->modalDescription('Bisa beberapa file sekaligus (1 file = 1 batch impor), termasuk file baris gagal yang sudah diperbaiki. Format template (TANGGAL, NAMA TOKO, SKU VARIAN / SKU BIG SELLER, QTY, PENDAPATAN TOKO) atau file export BigSeller (Nama Toko, Nomor SKU Toko, Penjualan Produk Valid, Dana Penjualan Produk Valid + kolom TANGGAL di belakang). Harga reseller, margin, dan total tagihan dihitung otomatis. Baris valid disimpan; baris gagal dicatat beserta alasannya di menu Import Gagal. Dua baris produk yang sama tetap dihitung seluruh qty-nya. Unggahan ulang file dengan isi yang sama tidak menambah transaksi, meskipun nama file diubah. Stok boleh negatif dan tagihan tetap dihitung. Isi NO PESANAN berbeda untuk pesanan berbeda; gunakan nomor yang sama untuk koreksi lintas file. Tanpa nomor/ID, file yang isinya berubah dianggap impor baru. Koreksi dokumen yang sudah ditagih/diretur dikunci.')
             ->modalSubmitActionLabel('Import')
             ->schema([
                 FileUpload::make('files')
+                    ->preventFilePathTampering()
                     ->label('File (.xlsx, .csv, .ods) — boleh lebih dari satu')
                     ->multiple()
                     ->maxFiles(20)
@@ -64,7 +68,7 @@ class SalesOrderImportActions
                 DatePicker::make('order_date')
                     ->label('Tanggal Pesanan Cadangan')
                     ->helperText('Untuk file export BigSeller: isi kolom TANGGAL di belakang kolom terakhir; baris yang TANGGAL-nya kosong memakai tanggal ini. SKU dengan penjualan 0 dilewati. File template manual tetap memakai kolom TANGGAL.')
-                                        ->native(false),
+                    ->native(false),
                 Select::make('warehouse_id')
                     ->label('Gudang Asal')
                     ->options(fn (): array => Warehouse::goodsOptions())
@@ -86,7 +90,7 @@ class SalesOrderImportActions
             ])
             ->action(function (array $data, SalesOrderImporter $importer): void {
                 $disk = Storage::disk('local');
-                $paths = array_values((array) $data['files']);
+                $paths = array_map(fn (mixed $path): string => ResourceIo::validatedUploadPath($path, 'imports/sales-orders'), array_values((array) $data['files']));
                 $names = (array) ($data['file_names'] ?? []);
 
                 try {
@@ -114,7 +118,7 @@ class SalesOrderImportActions
     {
         $errors = collect($result['errors']);
         $lines = collect([e(($result['files'] > 1 ? "{$result['files']} file, " : '')
-            ."{$result['rows']} baris dibaca: {$result['created']} tersimpan, {$result['skipped']} dilewati (sudah pernah diimpor), {$errors->count()} gagal.")]);
+            ."{$result['rows']} baris dibaca: {$result['created']} tersimpan, {$result['skipped']} dilewati (file/baris atau nomor transaksi sudah tercatat), {$errors->count()} gagal.")]);
 
         if ($result['fixed'] > 0) {
             $lines->push(e("{$result['fixed']} baris gagal sebelumnya kini sudah diperbaiki."));

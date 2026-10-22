@@ -68,7 +68,7 @@ class BalanceSheetService
         // saldo per reseller: positif = piutang, negatif = uang muka / titipan reseller
         $resellerBalances = array_map('floatval', DB::table('resellers as r')
             ->selectRaw(<<<'SQL'
-                r.opening_balance
+                CASE WHEN r.opening_balance_date IS NULL OR r.opening_balance_date <= ? THEN r.opening_balance ELSE 0 END
                 + COALESCE((SELECT SUM(bill_amount) FROM v_sales_lines l
                             WHERE l.reseller_id = r.id AND l.status <> 'cancelled' AND l.order_date <= ?), 0)
                 - COALESCE((SELECT SUM(sr.qty * i.reseller_unit_price) FROM sales_returns sr
@@ -78,7 +78,7 @@ class BalanceSheetService
                             WHERE st.reseller_id = r.id AND sr.credit_reseller AND sr.returned_at <= ?), 0)
                 - COALESCE((SELECT SUM(amount) FROM reseller_payments p WHERE p.reseller_id = r.id AND p.paid_at < ?), 0)
                 AS balance
-                SQL, [$date, $date, $nextDay])
+                SQL, [$date, $date, $date, $nextDay])
             ->pluck('balance')
             ->all());
 
@@ -88,12 +88,12 @@ class BalanceSheetService
             SELECT SUM(GREATEST(q.qty, 0) * COALESCE(c.total_cost, 0))
             FROM q
             LEFT JOIN LATERAL (
-                SELECT vc.total_cost FROM variant_costs vc WHERE vc.variant_id = q.variant_id
+                SELECT vc.total_cost FROM variant_costs vc WHERE vc.variant_id = q.variant_id AND vc.effective_from <= ?
                 ORDER BY (vc.effective_from <= ?) DESC,
                          CASE WHEN vc.effective_from <= ? THEN vc.effective_from END DESC,
                          vc.effective_from
                 LIMIT 1) c ON true
-            SQL, [$nextDay, $date, $date]);
+            SQL, [$nextDay, $date, $date, $date]);
 
         // bahan: qty per tanggal x rata-rata harga beli s.d. tanggal (fallback: rata-rata unit_cost di kartu bahan)
         $materials = $this->scalar(<<<'SQL'
@@ -102,10 +102,10 @@ class BalanceSheetService
                         FROM material_purchase_items i JOIN material_purchases p ON p.id = i.purchase_id
                         WHERE p.purchase_date <= ? GROUP BY 1),
                  mc AS (SELECT material_id, AVG(unit_cost) AS unit_cost FROM material_movements
-                        WHERE unit_cost IS NOT NULL GROUP BY 1)
+                        WHERE unit_cost IS NOT NULL AND moved_at < ? GROUP BY 1)
             SELECT SUM(GREATEST(q.qty, 0) * COALESCE(pc.unit_cost, mc.unit_cost, 0))
             FROM q LEFT JOIN pc USING (material_id) LEFT JOIN mc USING (material_id)
-            SQL, [$nextDay, $date]);
+            SQL, [$nextDay, $date, $nextDay]);
 
         // barang dalam proses: SPK sudah dipotong tapi belum selesai per tanggal (nilai bahan terpakai)
         $workInProgress = $this->scalar(<<<'SQL'
@@ -129,9 +129,9 @@ class BalanceSheetService
         $ytdProfit = $this->scalar(<<<'SQL'
             SELECT COALESCE((SELECT SUM(bill_amount - hpp_amount) FROM v_sales_lines
                              WHERE status <> 'cancelled' AND order_date BETWEEN ? AND ?), 0)
-                 - COALESCE((SELECT SUM(sr.qty * (i.reseller_unit_price - i.hpp_unit)) FROM sales_returns sr
+                 - COALESCE((SELECT SUM(CASE WHEN sr.credit_reseller THEN sr.qty * i.reseller_unit_price ELSE 0 END - CASE WHEN sr.restock THEN sr.qty * i.hpp_unit ELSE 0 END) FROM sales_returns sr
                              JOIN sales_order_items i ON i.id = sr.sales_order_item_id
-                             WHERE sr.credit_reseller AND sr.returned_at BETWEEN ? AND ?), 0)
+                             WHERE sr.returned_at BETWEEN ? AND ?), 0)
                  - COALESCE((SELECT SUM(amount) FROM expenses WHERE expense_date BETWEEN ? AND ?), 0)
             SQL, [$yearStart, $date, $yearStart, $date, $yearStart, $date]);
 
@@ -180,8 +180,8 @@ class BalanceSheetService
         $profit = collect(DB::select(<<<'SQL'
             SELECT store_id, SUM(revenue) AS revenue, SUM(admin_fee) AS admin_fee, SUM(ads) AS ads,
                    SUM(net_profit) AS net_profit, SUM(net_profit) FILTER (WHERE month >= ?) AS ytd_profit
-            FROM v_store_monthly_pl WHERE month <= ? GROUP BY 1
-            SQL, [$yearStart, $month]))->keyBy('store_id');
+            FROM fn_store_pl(?) GROUP BY 1
+            SQL, [$yearStart, $date]))->keyBy('store_id');
 
         $payments = DB::table('reseller_payments')
             ->where('paid_at', '<', $nextDay)

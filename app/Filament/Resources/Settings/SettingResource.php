@@ -78,7 +78,8 @@ class SettingResource extends Resource
                 TextInput::make('value')
                     ->label('Nilai')
                     ->required()
-                    ->numeric(fn (Get $get): bool => ! in_array($get('key'), static::TEXT_KEYS, true)),
+                    ->numeric(fn (Get $get): bool => ! in_array($get('key'), static::TEXT_KEYS, true))
+                    ->minValue(fn (Get $get): ?float => in_array($get('key'), static::TEXT_KEYS, true) ? null : (in_array($get('key'), ['price_rounding', 'tier_price_rounding', 'analysis_days', 'production_batch', 'dead_stock_days', 'default_warehouse_id', 'default_material_warehouse_id'], true) ? 1 : 0)),
             ]);
     }
 

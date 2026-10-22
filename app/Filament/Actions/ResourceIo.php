@@ -2,8 +2,10 @@
 
 namespace App\Filament\Actions;
 
+use App\Exceptions\BusinessRuleException;
 use App\Filament\Support\ImportResultNotification;
 use App\Imports\RowImporter;
+use App\Support\ApplicationAccess;
 use App\Support\TableExporter;
 use Filament\Actions\Action;
 use Filament\Actions\ActionGroup;
@@ -43,6 +45,7 @@ class ResourceIo
         return ActionGroup::make([
             ...collect(TableExporter::FORMATS)
                 ->map(fn (string $label, string $format): Action => Action::make("ioExport_{$format}")
+                    ->authorize(fn (HasTable $livewire): bool => ! method_exists($livewire, 'getResource') || $livewire::getResource()::canViewAny())
                     ->label("Tabel ini – {$label}")
                     ->action(fn (HasTable $livewire, TableExporter $exporter): BinaryFileResponse => response()
                         ->download(
@@ -118,6 +121,12 @@ class ResourceIo
         $title = app($importer)->title();
 
         return Action::make("{$prefix}Import")
+            ->authorize(fn (): bool => ApplicationAccess::allows(match (class_basename($importer)) {
+                'ExpenseImport', 'CashAccountImport', 'ExpenseCategoryImport', 'ResellerPaymentImport', 'TailorPaymentImport', 'StoreAdSpendImport' => 'kelola keuangan',
+                'TailorImport' => 'kelola produksi',
+                'SalesReturnImport', 'SkuAliasImport' => 'kelola penjualan',
+                default => 'kelola stok',
+            }))
             ->label('Import Excel')
             ->icon(Heroicon::OutlinedArrowUpTray)
             ->modalHeading("Import {$title}")
@@ -146,6 +155,7 @@ class ResourceIo
     public static function fileUpload(string $directory, int $maxKb = 20480): FileUpload
     {
         return FileUpload::make('file')
+            ->preventFilePathTampering()
             ->label('File (.xlsx, .ods, .csv)')
             ->disk('local')
             ->directory($directory)
@@ -173,12 +183,33 @@ class ResourceIo
     public static function runWithUpload(array $data, callable $import): mixed
     {
         $disk = Storage::disk('local');
+        $path = self::validatedUploadPath($data['file'] ?? null);
 
         try {
-            return $import($disk->path($data['file']), $data['file_name'] ?? basename($data['file']));
+            return $import($disk->path($path), $data['file_name'] ?? basename($path));
         } finally {
-            $disk->delete($data['file']);
+            $disk->delete($path);
         }
+    }
+
+    public static function validatedUploadPath(mixed $path, string $directory = 'imports'): string
+    {
+        if (! is_string($path) || ! str_starts_with($path, $directory.'/')
+            || str_contains($path, '\\') || str_contains($path, "\0")
+            || preg_match('~(?:^|/)\.{1,2}(?:/|$)~', $path)) {
+            throw new BusinessRuleException('Lokasi file impor tidak valid. Unggah ulang file melalui formulir.');
+        }
+
+        $disk = Storage::disk('local');
+        $root = realpath($disk->path($directory));
+        $resolved = realpath($disk->path($path));
+
+        if ($root === false || $resolved === false || ! is_file($resolved)
+            || ! str_starts_with($resolved, $root.DIRECTORY_SEPARATOR)) {
+            throw new BusinessRuleException('File impor tidak tersedia. Unggah ulang file melalui formulir.');
+        }
+
+        return $path;
     }
 
     private static function title(HasTable $livewire): string

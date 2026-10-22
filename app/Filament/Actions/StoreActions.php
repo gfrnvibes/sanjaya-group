@@ -4,6 +4,7 @@ namespace App\Filament\Actions;
 
 use App\Filament\Support\ImportResultNotification;
 use App\Services\StoreImporter;
+use App\Support\ApplicationAccess;
 use Filament\Actions\Action;
 use Filament\Actions\ActionGroup;
 use Filament\Support\Icons\Heroicon;
@@ -36,6 +37,7 @@ class StoreActions
     public static function exportAction(): Action
     {
         return Action::make('exportStores')
+            ->authorize(fn (): bool => ApplicationAccess::allows('kelola mitra'))
             ->label('Workbook Toko (untuk diedit & diimpor ulang)')
             ->icon(Heroicon::OutlinedDocumentArrowDown)
             ->action(fn (StoreImporter $importer): BinaryFileResponse => response()
@@ -46,6 +48,7 @@ class StoreActions
     public static function templateAction(): Action
     {
         return Action::make('downloadStoreTemplate')
+            ->authorize(fn (): bool => ApplicationAccess::allows('kelola mitra'))
             ->label('Unduh Template Toko')
             ->icon(Heroicon::OutlinedDocumentArrowDown)
             ->action(fn (StoreImporter $importer): BinaryFileResponse => response()
@@ -56,6 +59,7 @@ class StoreActions
     public static function importAction(): Action
     {
         return Action::make('importStores')
+            ->authorize(fn (): bool => ApplicationAccess::allows('kelola mitra'))
             ->label('Import Pemilik, Reseller & Toko')
             ->icon(Heroicon::OutlinedArrowUpTray)
             ->modalHeading('Import Pemilik, Reseller & Toko')

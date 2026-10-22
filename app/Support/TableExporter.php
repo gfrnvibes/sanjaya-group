@@ -6,11 +6,11 @@ use BackedEnum;
 use DateTimeInterface;
 use Filament\Support\Contracts\HasLabel;
 use Filament\Tables\Columns\Column;
+use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Contracts\HasTable;
 use Illuminate\Contracts\Support\Htmlable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
-use OpenSpout\Common\Entity\Row;
 use OpenSpout\Writer\AbstractWriterMultiSheets;
 use OpenSpout\Writer\AutoFilter;
 use OpenSpout\Writer\CSV\Writer as CsvWriter;
@@ -49,7 +49,7 @@ class TableExporter
         $count = 0;
 
         foreach ($livewire->getFilteredSortedTableQuery()->lazy(500) as $record) {
-            $writer->addRow(Row::fromValues(collect($columns)->map(fn (Column $column) => $this->value($column, $record))->all()));
+            $writer->addRow(SpreadsheetCells::row(collect($columns)->map(fn (Column $column) => $this->value($column, $record))->all(), csv: $format === 'csv'));
             $count++;
         }
 
@@ -77,7 +77,13 @@ class TableExporter
         $column->record($record);
         $column->clearCachedState();
 
-        return $this->normalize($column->getState());
+        $state = $column->getState();
+
+        if ($column instanceof TextColumn && ($column->isNumeric() || $column->isMoney()) && is_numeric($state)) {
+            return (float) $state;
+        }
+
+        return $this->normalize($state);
     }
 
     private function normalize(mixed $state): bool|float|int|string|null
@@ -89,7 +95,7 @@ class TableExporter
             $state instanceof DateTimeInterface => $state->format($state->format('H:i:s') === '00:00:00' ? 'Y-m-d' : 'Y-m-d H:i'),
             is_bool($state) => $state ? 'Ya' : 'Tidak',
             is_int($state), is_float($state) => $state,
-            is_numeric($state) => (float) $state,
+            is_string($state) => $state,
             is_array($state), $state instanceof Collection => collect($state)->map(fn ($item) => $this->normalize($item))->implode(', '),
             $state instanceof Model => (string) ($state->getAttribute('name') ?? $state->getKey()),
             $state instanceof Htmlable => trim(strip_tags($state->toHtml())),

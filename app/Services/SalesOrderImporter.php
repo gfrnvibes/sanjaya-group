@@ -12,11 +12,10 @@ use App\Exceptions\MissingPriceException;
 use App\Models\ProductVariant;
 use App\Models\SalesImportBatch;
 use App\Models\SalesImportFailure;
-use App\Models\SalesOrderItem;
+use App\Models\SalesOrder;
 use App\Models\SkuAlias;
 use App\Models\Store;
 use App\Support\Spreadsheet;
-use Illuminate\Database\QueryException;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -26,7 +25,7 @@ use Throwable;
  * Impor sheet "INPUT ORDERAN RESELLER": 1 baris = 1 pesanan.
  * Header dicari otomatis (boleh ada judul di atasnya & kolom otomatis di sampingnya).
  * Tiap baris disimpan terpisah: baris valid tersimpan, baris error dilaporkan.
- * Baris yang sama persis dengan pesanan yang sudah ada (toko, tanggal, SKU, qty, pendapatan) dilewati agar tidak dobel.
+ * Nomor/ID transaksi mengenali pesanan lintas file; sidik isi file dan nomor baris mengenali unggahan ulang.
  * Bisa beberapa file sekaligus (importMany): 1 file = 1 batch impor.
  * Baris gagal disimpan (nilai asli + kategori alasan) agar bisa diunduh, diperbaiki, lalu diimport ulang;
  * kolom ID GAGAL pada file baris gagal menandai baris lama sebagai sudah diperbaiki / gagal lagi.
@@ -50,6 +49,8 @@ class SalesOrderImporter
         'SKU BIG SELLER' => 'sku_bigseller',
         'QTY' => 'qty',
         'PENDAPATAN TOKO' => 'revenue',
+        'NO PESANAN' => 'order_no',
+        'ID TRANSAKSI IMPOR' => 'import_key',
     ];
 
     /** Header export BigSeller (Analisa Bisnis > SKU Toko) => kunci. Kolom TANGGAL ditambahkan manual di belakang; sel kosong memakai tanggal dari form impor. */
@@ -59,6 +60,9 @@ class SalesOrderImporter
         'NOMOR SKU TOKO' => 'sku_bigseller',
         'PENJUALAN PRODUK VALID' => 'qty',
         'DANA PENJUALAN PRODUK VALID' => 'revenue',
+        'NO PESANAN' => 'order_no',
+        'NO. PESANAN' => 'order_no',
+        'ID TRANSAKSI IMPOR' => 'import_key',
     ];
 
     /** Kolom ID baris gagal (terisi di file baris gagal, kosong di file biasa). */
@@ -73,8 +77,8 @@ class SalesOrderImporter
     public function __construct(private SalesOrderService $orders) {}
 
     /**
-     * Impor beberapa file sekaligus. Tiap file = 1 batch impor; file diproses berurutan sehingga baris
-     * yang sama persis dengan file sebelumnya (atau pesanan yang sudah ada) dilewati.
+     * Impor beberapa file sekaligus. Tiap file = 1 batch impor; pesanan dengan nomor/ID yang sama
+     * dikenali kembali. Dua baris identik dalam satu file tetap menjadi dua pesanan terpisah.
      *
      * @param  list<array{path: string, name: string}>  $files
      * @param  array{warehouse_id: int, status: string, source: string, order_date?: ?string}  $options
@@ -114,22 +118,83 @@ class SalesOrderImporter
             'imported_by' => auth()->id(),
         ]);
 
+        $this->stores = $this->variants = $this->aliases = null;
         $this->failures = [];
         $this->fixed = [];
 
         try {
             [$rows, $errors, $lineCount] = $this->parse($path, $fileName, $options['order_date'] ?? null);
+            $fingerprint = hash_file('sha256', $path);
+            if ($fingerprint === false) {
+                throw new BusinessRuleException('File impor tidak dapat dibaca. Unggah ulang file.');
+            }
+            foreach ($this->failures as &$failure) {
+                if ($failure['line'] > 0 && blank($failure['values']['NO PESANAN'] ?? null) && blank($failure['values']['ID TRANSAKSI IMPOR'] ?? null)) {
+                    $date = Spreadsheet::parseDate($failure['values']['TANGGAL'] ?? null) ?? '';
+                    $failure['values']['ID TRANSAKSI IMPOR'] = hash('sha256', 'file|'.$fingerprint.'|date|'.$date.'|line|'.$failure['line']);
+                }
+            }
+            unset($failure);
         } catch (BusinessRuleException $exception) {
             [$rows, $errors, $lineCount] = [[], [$exception->getMessage()], 0];
+            $fingerprint = '';
             $this->fail(0, [], ImportFailureReason::FileFormat, $exception->getMessage());
         }
 
+        return $this->completeBatch($batch, $rows, $errors, $lineCount, $options, $fingerprint);
+    }
+
+    /**
+     * @param  array{warehouse_id: int, status: string}  $options
+     * @return array{batch: SalesImportBatch, rows: int, created: int, skipped: int, fixed: int, errors: list<string>}
+     */
+    public function retryFailure(SalesImportFailure $failure, string $sku, array $options): array
+    {
+        return DB::transaction(function () use ($failure, $sku, $options): array {
+            DB::select("SELECT pg_advisory_xact_lock(hashtextextended('sales-documents', 0))");
+            $failure = SalesImportFailure::query()->lockForUpdate()->findOrFail($failure->id);
+            if ($failure->status !== ImportFailureStatus::Open || $failure->line < 1) {
+                throw new BusinessRuleException('Baris ini sudah ditangani. Muat ulang daftar impor gagal.');
+            }
+
+            $this->stores = $this->variants = $this->aliases = null;
+            $this->failures = $this->fixed = [];
+            $batch = SalesImportBatch::create([
+                'source' => $failure->batch?->source ?? SalesImportSource::Manual,
+                'file_name' => 'Perbaikan SKU baris #'.$failure->id,
+                'imported_by' => auth()->id(),
+            ]);
+            $values = $failure->values;
+            $values['SKU VARIAN'] = trim($sku);
+            // Baris gagal lama yang belum memiliki identitas tetap aman dari percobaan ulang ganda.
+            if (blank($values['ID TRANSAKSI IMPOR'] ?? null) && blank($values['NO PESANAN'] ?? null)) {
+                $values['ID TRANSAKSI IMPOR'] = hash('sha256', 'failure|'.$failure->id);
+            }
+            $input = [];
+            foreach (self::COLUMNS as $label => $key) {
+                $input[$key] = $values[$label] ?? null;
+            }
+            $input['failure_id'] = (string) $failure->id;
+            $errors = [];
+            $row = $this->parseRow($input, $failure->line, $errors);
+
+            return $this->completeBatch($batch, $row === null ? [] : [$row], $errors, 1, $options, '');
+        });
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $rows
+     * @param  list<string>  $errors
+     * @param  array<string, mixed>  $options
+     */
+    private function completeBatch(SalesImportBatch $batch, array $rows, array $errors, int $lineCount, array $options, string $fingerprint): array
+    {
         if ($lineCount === 0 && $errors === []) {
             $errors[] = 'Tidak ada baris data yang bisa diimpor.';
             $this->fail(0, [], ImportFailureReason::FileFormat, 'Tidak ada baris data yang bisa diimpor');
         }
 
-        [$created, $skipped] = $this->store($rows, $batch, $options, $errors);
+        [$created, $skipped] = $this->store($rows, $batch, $options, $errors, $fingerprint);
 
         $batch->update([
             'status' => $created === 0 && $errors !== [] ? ImportBatchStatus::Failed : ImportBatchStatus::Done,
@@ -185,53 +250,70 @@ class SalesOrderImporter
 
     /**
      * Simpan tiap baris dalam transaksinya sendiri: baris valid tersimpan, baris error dilaporkan.
-     * Baris yang sama persis dengan pesanan yang sudah ada (toko, tanggal, SKU, qty, pendapatan) dilewati.
+     * Kesamaan toko, tanggal, SKU, qty, dan pendapatan tidak menandakan transaksi yang sama.
      *
      * @param  list<array{line: int, order_date: string, store: Store, variant_id: int, sku_raw: ?string, qty: int, revenue: ?float, raw: array<string, string>, failure_id: ?int}>  $rows
      * @param  array{warehouse_id: int, status: string}  $options
      * @param  list<string>  $errors
      * @return array{0: int, 1: int} [tersimpan, dilewati]
      */
-    private function store(array $rows, SalesImportBatch $batch, array $options, array &$errors): array
+    private function store(array $rows, SalesImportBatch $batch, array $options, array &$errors, string $fingerprint): array
     {
         $created = 0;
         $skipped = 0;
-
-        /** @var array<string, int> sisa pesanan yang sudah ada per sidik baris */
-        $existing = [];
-
         foreach ($rows as $row) {
-            $key = $this->signature($row);
-            $existing[$key] ??= $this->existingCount($row);
+            $key = hash('sha256', $row['order_no'] !== ''
+                ? 'order|'.$row['store']->id.'|'.$row['order_no']
+                : 'file|'.$fingerprint.'|date|'.$row['order_date'].'|line|'.$row['line']);
 
-            // Baris identik dalam satu file tetap diimpor sebanyak yang belum ada di sistem.
-            if ($existing[$key] > 0) {
-                $existing[$key]--;
-                $skipped++;
-
-                if ($row['failure_id'] !== null) {
-                    $this->fixed[] = $row['failure_id']; // pesanannya ternyata sudah ada
-                }
-
-                continue;
+            if ($row['import_key'] !== '') {
+                $key = $row['import_key'];
             }
+            $row['raw']['ID TRANSAKSI IMPOR'] = $key;
 
             try {
-                DB::transaction(fn () => $this->orders->create([
-                    'store_id' => $row['store']->id,
-                    'warehouse_id' => $options['warehouse_id'],
-                    'order_no' => sprintf('IMP%d-%04d', $batch->id, $row['line']),
-                    'order_date' => $row['order_date'],
-                    'status' => $options['status'] ?? SalesOrderStatus::Completed->value,
-                    'import_batch_id' => $batch->id,
-                ], [[
-                    'variant_id' => $row['variant_id'],
-                    'sku_raw' => $row['sku_raw'],
-                    'qty' => $row['qty'],
-                    'revenue' => $row['revenue'],
-                ]]));
-                $created++;
+                $saved = DB::transaction(function () use ($row, $batch, $options, $key): bool {
+                    DB::select("SELECT pg_advisory_xact_lock(hashtextextended('sales-documents', 0))");
+                    DB::select('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))', ['import:'.$key]);
+                    $order = SalesOrder::query()->where('import_key', $key)->lockForUpdate()->first();
 
+                    if ($order === null && $row['order_no'] !== '') {
+                        $order = SalesOrder::query()->where('store_id', $row['store']->id)->where('order_no', $row['order_no'])->lockForUpdate()->first();
+                        if ($order !== null && $order->import_batch_id === null) {
+                            throw new BusinessRuleException('No pesanan sudah digunakan pesanan manual. Koreksi melalui dokumen asal.');
+                        }
+                    }
+
+                    if ($order !== null) {
+                        if ($order->status === SalesOrderStatus::Cancelled) {
+                            throw new BusinessRuleException('Pesanan impor ini sudah dibatalkan. Gunakan nomor pesanan baru bila memang transaksi baru.');
+                        }
+                        $item = $order->items()->sole();
+                        if ($order->store_id !== $row['store']->id || ($row['order_no'] !== '' && $order->order_no !== $row['order_no']) || $item->variant_id !== $row['variant_id'] || $order->order_date->toDateString() !== $row['order_date'] || $order->warehouse_id !== (int) $options['warehouse_id']) {
+                            throw new BusinessRuleException('Identitas/gudang pesanan sudah berbeda. Periksa dokumen asal sebelum koreksi.');
+                        }
+                        $sameRevenue = $item->revenue === null ? $row['revenue'] === null
+                            : ($row['revenue'] !== null && round((float) $item->revenue, 2) === round($row['revenue'], 2));
+                        if ($item->qty === $row['qty'] && $sameRevenue) {
+                            return false;
+                        }
+                        $this->orders->reviseImported($order, $row['qty'], $row['revenue']);
+
+                        return true;
+                    }
+
+                    $this->orders->create([
+                        'store_id' => $row['store']->id, 'warehouse_id' => $options['warehouse_id'],
+                        'order_no' => $row['order_no'] ?: sprintf('IMP%d-%04d', $batch->id, $row['line']),
+                        'order_date' => $row['order_date'], 'status' => $options['status'] ?? SalesOrderStatus::Completed->value,
+                        'import_batch_id' => $batch->id, 'import_key' => $key,
+                    ], [[
+                        'variant_id' => $row['variant_id'], 'sku_raw' => $row['sku_raw'], 'qty' => $row['qty'], 'revenue' => $row['revenue'],
+                    ]]);
+
+                    return true;
+                });
+                $saved ? $created++ : $skipped++;
                 if ($row['failure_id'] !== null) {
                     $this->fixed[] = $row['failure_id'];
                 }
@@ -239,45 +321,15 @@ class SalesOrderImporter
                 $errors[] = "Baris {$row['line']}: {$exception->getMessage()}";
                 $reason = $exception instanceof MissingPriceException ? ImportFailureReason::PriceMissing : ImportFailureReason::BusinessRule;
                 $this->fail($row['line'], $row['raw'], $reason, $exception->getMessage(), $row['failure_id']);
-            } catch (QueryException $exception) {
-                $errors[] = "Baris {$row['line']}: gagal disimpan ({$this->firstLine($exception)}).";
-                $this->fail($row['line'], $row['raw'], ImportFailureReason::Database, "gagal disimpan ({$this->firstLine($exception)})", $row['failure_id']);
+            } catch (Throwable $exception) {
+                report($exception);
+                $message = 'Gagal disimpan. Periksa data atau hubungi administrator dengan nomor batch '.$batch->id;
+                $errors[] = "Baris {$row['line']}: {$message}.";
+                $this->fail($row['line'], $row['raw'], ImportFailureReason::Database, $message, $row['failure_id']);
             }
         }
 
         return [$created, $skipped];
-    }
-
-    /**
-     * @param  array{order_date: string, store: Store, variant_id: int, qty: int, revenue: ?float}  $row
-     */
-    private function signature(array $row): string
-    {
-        return implode('|', [
-            $row['store']->id, $row['order_date'], $row['variant_id'], $row['qty'],
-            $row['revenue'] === null ? '-' : number_format($row['revenue'], 2, '.', ''),
-        ]);
-    }
-
-    /**
-     * Jumlah baris pesanan yang sudah ada dengan toko, tanggal, SKU, qty, dan pendapatan yang sama.
-     *
-     * @param  array{order_date: string, store: Store, variant_id: int, qty: int, revenue: ?float}  $row
-     */
-    private function existingCount(array $row): int
-    {
-        return SalesOrderItem::query()
-            ->join('sales_orders', 'sales_orders.id', '=', 'sales_order_items.sales_order_id')
-            ->where('sales_orders.store_id', $row['store']->id)
-            ->whereDate('sales_orders.order_date', $row['order_date'])
-            ->where('sales_order_items.variant_id', $row['variant_id'])
-            ->where('sales_order_items.qty', $row['qty'])
-            ->when(
-                $row['revenue'] === null,
-                fn ($query) => $query->whereNull('sales_order_items.revenue'),
-                fn ($query) => $query->where('sales_order_items.revenue', round($row['revenue'], 2)),
-            )
-            ->count();
     }
 
     /**
@@ -294,6 +346,7 @@ class SalesOrderImporter
                 'headers' => [
                     ...self::COLUMNS,
                     'SKU BIGSELLER' => 'sku_bigseller',
+                    'NO. PESANAN' => 'order_no',
                     self::FAILURE_ID_COLUMN => 'failure_id',
                 ],
                 'required' => ['order_date', 'store', 'qty', ['sku', 'sku_bigseller']],
@@ -321,7 +374,6 @@ class SalesOrderImporter
             }
 
             $parsed = $this->parseRow($line['values'], $line['line'], $errors);
-
             if ($parsed !== null) {
                 $rows[] = $parsed;
             }
@@ -343,6 +395,13 @@ class SalesOrderImporter
         $failureId = Spreadsheet::text($input['failure_id'] ?? null);
         $failureId = ctype_digit($failureId) ? (int) $failureId : null;
 
+        $importKey = Spreadsheet::text($input['import_key'] ?? null);
+        if ($importKey !== '' && ! preg_match('/^[a-f0-9]{64}$/', $importKey)) {
+            $rowErrors['ID TRANSAKSI IMPOR tidak valid; gunakan file baris gagal asli'] = ImportFailureReason::BusinessRule;
+        }
+        if (mb_strlen(Spreadsheet::text($input['order_no'] ?? null)) > 60) {
+            $rowErrors['NO PESANAN maksimal 60 karakter'] = ImportFailureReason::BusinessRule;
+        }
         $date = Spreadsheet::parseDate($input['order_date'] ?? null);
         if ($date === null) {
             $rowErrors['TANGGAL kosong atau formatnya tidak dikenali'] = ImportFailureReason::InvalidDate;
@@ -399,6 +458,8 @@ class SalesOrderImporter
             'revenue' => $revenue,
             'raw' => $raw,
             'failure_id' => $failureId,
+            'order_no' => Spreadsheet::text($input['order_no'] ?? null),
+            'import_key' => $importKey,
         ];
     }
 

@@ -124,6 +124,16 @@ class SpreadsheetRow
         return $date;
     }
 
+    public function countedAt(string $key): Carbon
+    {
+        $value = $this->filled($key) ? Spreadsheet::parseCountedAt($this->values[$key]) : now();
+        if ($value === null || $value->isFuture()) {
+            $this->errors[] = 'Waktu opname tidak valid atau di masa depan. Gunakan YYYY-MM-DD HH:MM:SS.';
+        }
+
+        return $value ?? now();
+    }
+
     public function bool(string $key, string $label = 'AKTIF'): ?bool
     {
         if (! $this->filled($key)) {

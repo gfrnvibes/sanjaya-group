@@ -5,8 +5,10 @@ namespace App\Imports;
 use App\Enums\GoodsReceiptSource;
 use App\Models\GoodsReceipt;
 use App\Services\InventoryService;
+use App\Support\DocumentNumber;
 use App\Support\Spreadsheet;
 use App\Support\SpreadsheetRow;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 
@@ -129,13 +131,6 @@ class GoodsReceiptImport extends RowImporter
 
     private function nextNumber(string $date): string
     {
-        $prefix = 'BM-'.date('ymd', strtotime($date)).'-';
-        $sequence = GoodsReceipt::query()->where('receipt_no', 'like', $prefix.'%')->count() + 1;
-
-        while (GoodsReceipt::query()->where('receipt_no', $prefix.str_pad((string) $sequence, 3, '0', STR_PAD_LEFT))->exists()) {
-            $sequence++;
-        }
-
-        return $prefix.str_pad((string) $sequence, 3, '0', STR_PAD_LEFT);
+        return DocumentNumber::next('BM-'.Carbon::parse($date)->format('ymd').'-', 'goods_receipts', 'receipt_no', 3);
     }
 }

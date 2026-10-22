@@ -57,7 +57,7 @@ enum ImportFailureReason: string implements HasColor, HasLabel
             self::InvalidDate => 'Isi TANGGAL dengan format tanggal Excel atau teks YYYY-MM-DD / DD/MM/YYYY.',
             self::StoreNotFound => 'Samakan NAMA TOKO dengan nama di menu Toko (cek salah ketik/spasi), atau daftarkan tokonya dulu lewat import Reseller & Toko.',
             self::StoreInactive => 'Aktifkan toko di menu Toko bila masih berjualan, atau abaikan baris ini.',
-            self::SkuNotFound => 'Perbaiki SKU VARIAN sesuai master varian, atau tambahkan SKU BIG SELLER ini di menu Pemetaan SKU.',
+            self::SkuNotFound => 'Klik Perbaiki SKU untuk memilih varian dan mencoba ulang langsung, atau tambahkan SKU BIG SELLER ini di menu Pemetaan SKU.',
             self::SkuInactive => 'Aktifkan varian di menu Varian bila masih dijual, atau ganti ke SKU penggantinya.',
             self::InvalidQty => 'Isi QTY dengan bilangan bulat minimal 1.',
             self::InvalidRevenue => 'Isi PENDAPATAN TOKO dengan angka >= 0, atau kosongkan.',

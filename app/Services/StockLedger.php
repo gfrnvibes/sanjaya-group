@@ -12,6 +12,7 @@ use App\Models\StockMovement;
 use App\Models\Warehouse;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Satu-satunya pintu menulis ledger stok barang jadi & bahan.
@@ -29,20 +30,25 @@ class StockLedger
         ?string $note = null,
         CarbonInterface|string|null $movedAt = null,
     ): StockMovement {
-        $this->ensureWarehouse($warehouseId, goods: true);
+        return DB::transaction(function () use ($variantId, $warehouseId, $qty, $type, $source, $unitCost, $note, $movedAt): StockMovement {
+            $this->ensureWarehouse($warehouseId, goods: true);
+            $this->lockBalance('stock', $variantId, $warehouseId);
+            $this->ensureNoLaterCount('stock', $variantId, $warehouseId, $movedAt ?? now(), $type !== StockMovementType::Opname);
 
-        return StockMovement::create([
-            'variant_id' => $variantId,
-            'warehouse_id' => $warehouseId,
-            'moved_at' => $movedAt ?? now(),
-            'qty' => $qty,
-            'movement_type' => $type,
-            'unit_cost' => $unitCost,
-            'source_type' => $source?->getMorphClass(),
-            'source_id' => $source?->getKey(),
-            'note' => $note,
-            'created_by' => auth()->id(),
-        ]);
+            // Penjualan tetap dicatat dan ditagih meskipun stok barang jadi menjadi negatif.
+            return StockMovement::create([
+                'variant_id' => $variantId,
+                'warehouse_id' => $warehouseId,
+                'moved_at' => $movedAt ?? now(),
+                'qty' => $qty,
+                'movement_type' => $type,
+                'unit_cost' => $unitCost,
+                'source_type' => $source?->getMorphClass(),
+                'source_id' => $source?->getKey(),
+                'note' => $note,
+                'created_by' => auth()->id(),
+            ]);
+        });
     }
 
     public function moveMaterial(
@@ -55,20 +61,28 @@ class StockLedger
         ?string $note = null,
         CarbonInterface|string|null $movedAt = null,
     ): MaterialMovement {
-        $this->ensureWarehouse($warehouseId, goods: false);
+        return DB::transaction(function () use ($materialId, $warehouseId, $qty, $type, $source, $unitCost, $note, $movedAt): MaterialMovement {
+            $this->ensureWarehouse($warehouseId, goods: false);
+            $this->lockBalance('material', $materialId, $warehouseId);
+            $this->ensureNoLaterCount('material', $materialId, $warehouseId, $movedAt ?? now(), $type !== MaterialMovementType::Opname);
 
-        return MaterialMovement::create([
-            'material_id' => $materialId,
-            'warehouse_id' => $warehouseId,
-            'moved_at' => $movedAt ?? now(),
-            'qty' => $qty,
-            'movement_type' => $type,
-            'unit_cost' => $unitCost,
-            'source_type' => $source?->getMorphClass(),
-            'source_id' => $source?->getKey(),
-            'note' => $note,
-            'created_by' => auth()->id(),
-        ]);
+            if ((float) $qty < 0 && (float) $this->materialQty($materialId, $warehouseId) + (float) $qty < -0.0001) {
+                throw new BusinessRuleException('Stok bahan tidak cukup. Periksa stok awal/gudang dan lakukan rekonsiliasi.');
+            }
+
+            return MaterialMovement::create([
+                'material_id' => $materialId,
+                'warehouse_id' => $warehouseId,
+                'moved_at' => $movedAt ?? now(),
+                'qty' => $qty,
+                'movement_type' => $type,
+                'unit_cost' => $unitCost,
+                'source_type' => $source?->getMorphClass(),
+                'source_id' => $source?->getKey(),
+                'note' => $note,
+                'created_by' => auth()->id(),
+            ]);
+        });
     }
 
     /**
@@ -78,11 +92,10 @@ class StockLedger
      */
     private function ensureWarehouse(int $warehouseId, bool $goods): void
     {
-        static $warehouses = [];
-        $warehouse = $warehouses[$warehouseId] ??= Warehouse::query()->find($warehouseId, ['id', 'name', 'kind']);
+        $warehouse = Warehouse::query()->find($warehouseId, ['id', 'name', 'kind', 'is_active']);
 
-        if ($warehouse === null) {
-            return;
+        if ($warehouse === null || ! $warehouse->is_active) {
+            throw new BusinessRuleException('Gudang tidak ditemukan atau tidak aktif.');
         }
 
         if ($goods && ! $warehouse->kind->storesGoods()) {
@@ -92,6 +105,30 @@ class StockLedger
         if (! $goods && ! $warehouse->kind->storesMaterials()) {
             throw new BusinessRuleException("\"{$warehouse->name}\" adalah gudang barang jadi, tidak bisa untuk stok bahan. Pilih gudang bahan baku.");
         }
+    }
+
+    public function lockBalance(string $kind, int $itemId, int $warehouseId): void
+    {
+        DB::select('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))', ["{$kind}:{$itemId}:{$warehouseId}"]);
+    }
+
+    public function ensureNoLaterCount(string $kind, int $itemId, int $warehouseId, CarbonInterface|string $at, bool $inclusive = false): void
+    {
+        $model = $kind === 'stock' ? StockMovement::class : MaterialMovement::class;
+        $field = $kind === 'stock' ? 'variant_id' : 'material_id';
+        if ($model::query()->where($field, $itemId)->where('warehouse_id', $warehouseId)->where('movement_type', 'opname')->where('moved_at', $inclusive ? '>=' : '>', $at)->exists()) {
+            throw new BusinessRuleException('Sudah ada opname pada/setelah waktu tersebut. Gunakan waktu koreksi setelah opname terakhir.');
+        }
+    }
+
+    public function stockQtyAt(int $variantId, int $warehouseId, CarbonInterface|string $at): int
+    {
+        return (int) StockMovement::query()->where('variant_id', $variantId)->where('warehouse_id', $warehouseId)->where('moved_at', '<=', $at)->sum('qty');
+    }
+
+    public function materialQtyAt(int $materialId, int $warehouseId, CarbonInterface|string $at): float
+    {
+        return (float) MaterialMovement::query()->where('material_id', $materialId)->where('warehouse_id', $warehouseId)->where('moved_at', '<=', $at)->sum('qty');
     }
 
     public function stockQty(int $variantId, int $warehouseId): int

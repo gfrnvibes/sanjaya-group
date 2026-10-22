@@ -32,7 +32,7 @@ class ListSalesImportFailures extends ListRecords
         return 'Belum diperbaiki: '.$counts->sum().' baris — '.$counts
             ->map(fn (int $total, string $reason): string => (ImportFailureReason::tryFrom($reason)?->getLabel() ?? $reason)." {$total}")
             ->implode(', ')
-            .'. Alur: Unduh baris gagal → perbaiki di Excel (atau perbaiki master datanya) → Import Excel.';
+            .'. Untuk koreksi SKU, klik Perbaiki SKU pada baris. Perbaikan lainnya bisa melalui Excel atau master data, lalu impor ulang.';
     }
 
     protected function getHeaderActions(): array

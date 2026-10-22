@@ -73,11 +73,13 @@ class ResellerPaymentResource extends Resource
                     ->required(fn (Get $get): bool => self::method($get) !== PaymentMethod::CostOffset)
                     ->visible(fn (Get $get): bool => self::method($get) !== PaymentMethod::CostOffset),
                 FileUpload::make('proof_path')
+                    ->preventFilePathTampering()
                     ->label('Bukti Bayar')
                     ->image()
-                    ->disk('public')
+                    ->disk('local')
                     ->directory('payment-proofs')
-                    ->visibility('public'),
+                    ->visibility('private')
+                    ->maxSize(5120),
                 TextInput::make('note')
                     ->label('Catatan')
                     ->helperText('Untuk Potongan Biaya, catat biayanya di Keuangan > Biaya dan tautkan ke pembayaran ini.')
@@ -112,7 +114,7 @@ class ResellerPaymentResource extends Resource
                 TextColumn::make('proof_path')
                     ->label('Bukti')
                     ->formatStateUsing(fn (?string $state): string => $state ? 'Lihat' : '-')
-                    ->url(fn (ResellerPayment $record): ?string => $record->proof_path ? asset('storage/'.$record->proof_path) : null, shouldOpenInNewTab: true),
+                    ->url(fn (ResellerPayment $record): ?string => $record->proof_path ? route('filament.administrator.payment-proofs.download', ['payment' => $record->id]) : null, shouldOpenInNewTab: true),
                 TextColumn::make('note')
                     ->label('Catatan')
                     ->placeholder('-')

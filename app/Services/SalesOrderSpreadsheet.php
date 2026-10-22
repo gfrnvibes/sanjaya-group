@@ -8,8 +8,8 @@ use App\Models\SalesOrder;
 use App\Models\SalesOrderItem;
 use App\Models\Store;
 use App\Support\Spreadsheet;
+use App\Support\SpreadsheetCells;
 use Illuminate\Database\Eloquent\Builder;
-use OpenSpout\Common\Entity\Cell;
 use OpenSpout\Common\Entity\Row;
 use OpenSpout\Common\Entity\Style\Style;
 use OpenSpout\Writer\AbstractWriterMultiSheets;
@@ -28,7 +28,7 @@ class SalesOrderSpreadsheet
     public const FORMATS = ['xlsx' => 'Excel (.xlsx)', 'csv' => 'CSV (.csv)', 'ods' => 'OpenDocument (.ods)'];
 
     /** Kolom input (header merah) â€” urutan template impor. */
-    public const INPUT_COLUMNS = ['TANGGAL', 'NAMA TOKO', 'SKU VARIAN', 'SKU BIG SELLER', 'QTY', 'PENDAPATAN TOKO'];
+    public const INPUT_COLUMNS = ['TANGGAL', 'NAMA TOKO', 'SKU VARIAN', 'SKU BIG SELLER', 'QTY', 'PENDAPATAN TOKO', 'NO PESANAN'];
 
     /** Kolom export: true = input (merah), false = otomatis (hijau). */
     private const EXPORT_COLUMNS = [
@@ -44,7 +44,7 @@ class SalesOrderSpreadsheet
         'MARGIN' => false,
         'TOTAL TAGIHAN' => false,
         'STATUS' => false,
-        'NO. PESANAN' => false,
+        'NO PESANAN' => true,
     ];
 
     /**
@@ -64,6 +64,7 @@ class SalesOrderSpreadsheet
         $sheet->setColumnWidth(24, 4);
         $sheet->setColumnWidth(8, 5);
         $sheet->setColumnWidth(18, 6);
+        $sheet->setColumnWidth(24, 7);
         $writer->addRow(Spreadsheet::headerRow(array_fill_keys(self::INPUT_COLUMNS, true)));
 
         Spreadsheet::addSheet($writer, 'Petunjuk', [40, 90], [
@@ -74,10 +75,11 @@ class SalesOrderSpreadsheet
             ['SKU BIG SELLER', 'SKU dari BigSeller/marketplace. Dipetakan otomatis lewat menu Pemetaan SKU.'],
             ['QTY', 'Jumlah barang, bilangan bulat minimal 1.'],
             ['PENDAPATAN TOKO', 'Pendapatan toko untuk baris ini (boleh kosong).'],
+            ['NO PESANAN', 'Opsional: nomor transaksi unik per toko. Pesanan berbeda harus memakai nomor berbeda meskipun barang dan jumlahnya sama. Gunakan nomor yang sama hanya untuk koreksi transaksi tersebut.'],
             ['', ''],
             ['Otomatis', 'Pemilik toko, nama produk, harga reseller, margin, total tagihan dihitung sistem sesuai tanggal pesanan.'],
-            ['Catatan', 'Setiap baris menjadi 1 pesanan. Stok berkurang dari gudang yang dipilih saat impor.'],
-            ['', 'Baris valid disimpan, baris error dilaporkan. Baris yang sama persis (tanggal, toko, SKU, qty, pendapatan) dengan pesanan yang sudah ada dilewati, jadi file yang sama aman diimpor ulang.'],
+            ['Catatan', 'Dua baris SKU yang sama tetap dihitung seluruh qty-nya sebagai dua pesanan. Stok boleh negatif; tagihan reseller tetap dihitung. Mengunggah ulang file dengan isi yang sama tidak menambah transaksi lagi, meskipun nama file diubah.'],
+            ['', 'Gunakan NO PESANAN untuk mengenali pesanan lintas file dan koreksi. Nomor/ID yang sama dengan isi identik dilewati; perubahan memperbarui transaksi asal selama belum ditagih/diretur. Tanpa nomor/ID, file yang isinya berubah dianggap impor baru. Aturan ini juga berlaku untuk BigSeller.'],
             ['Contoh', '2026-10-01 | Ground Supply Tiktok | TJN | | 1 | 52492'],
         ]);
 
@@ -101,7 +103,7 @@ class SalesOrderSpreadsheet
 
         $sheet = $writer->getCurrentSheet();
         $sheet->setName('Baris Gagal');
-        foreach ([14, 30, 16, 24, 8, 18, 10, 24, 60, 70, 30, 8] as $index => $width) {
+        foreach ([14, 30, 16, 24, 8, 18, 24, 24, 10, 24, 60, 70, 30, 8] as $index => $width) {
             $sheet->setColumnWidth($width, $index + 1);
         }
 
@@ -126,7 +128,7 @@ class SalesOrderSpreadsheet
             ->chunk(500, function ($chunk) use ($writer, &$rowCount): void {
                 foreach ($chunk as $failure) {
                     /** @var SalesImportFailure $failure */
-                    $writer->addRow(Row::fromValues([
+                    $writer->addRow(SpreadsheetCells::row([
                         ...array_map(fn (string $label): ?string => $failure->value($label), array_keys(SalesOrderImporter::COLUMNS)),
                         $failure->id,
                         $failure->reason->getLabel(),
@@ -140,7 +142,7 @@ class SalesOrderSpreadsheet
             });
 
         if ($rowCount > 0) {
-            $sheet->setAutoFilter(new AutoFilter(0, 1, 11, $rowCount + 1));
+            $sheet->setAutoFilter(new AutoFilter(0, 1, count(SalesOrderImporter::COLUMNS) + 5, $rowCount + 1));
         }
 
         Spreadsheet::addSheet($writer, 'Petunjuk', [24, 100], [
@@ -223,19 +225,19 @@ class SalesOrderSpreadsheet
                     /** @var SalesOrderItem $item */
                     $order = $item->salesOrder;
                     $writer->addRow(new Row([
-                        Cell::fromValue($order->order_date->toDateString()),
-                        Cell::fromValue($order->store?->reseller?->owner?->name),
-                        Cell::fromValue($order->store?->name),
-                        Cell::fromValue($item->variant?->sku),
-                        Cell::fromValue($item->sku_raw !== $item->variant?->sku ? $item->sku_raw : null),
-                        Cell::fromValue($item->variant?->name),
-                        Cell::fromValue((float) $item->reseller_unit_price, $money),
-                        Cell::fromValue($item->qty),
-                        Cell::fromValue($item->revenue === null ? null : (float) $item->revenue, $money),
-                        Cell::fromValue($item->margin === null ? null : (float) $item->margin, $money),
-                        Cell::fromValue((float) $item->bill_amount, $money),
-                        Cell::fromValue($order->status->getLabel()),
-                        Cell::fromValue($order->order_no),
+                        SpreadsheetCells::cell($order->order_date->toDateString(), csv: $writer instanceof CsvWriter),
+                        SpreadsheetCells::cell($order->store?->reseller?->owner?->name, csv: $writer instanceof CsvWriter),
+                        SpreadsheetCells::cell($order->store?->name, csv: $writer instanceof CsvWriter),
+                        SpreadsheetCells::cell($item->variant?->sku, csv: $writer instanceof CsvWriter),
+                        SpreadsheetCells::cell($item->sku_raw !== $item->variant?->sku ? $item->sku_raw : null, csv: $writer instanceof CsvWriter),
+                        SpreadsheetCells::cell($item->variant?->name, csv: $writer instanceof CsvWriter),
+                        SpreadsheetCells::cell((float) $item->reseller_unit_price, $money, csv: $writer instanceof CsvWriter),
+                        SpreadsheetCells::cell($item->qty, csv: $writer instanceof CsvWriter),
+                        SpreadsheetCells::cell($item->revenue === null ? null : (float) $item->revenue, $money, csv: $writer instanceof CsvWriter),
+                        SpreadsheetCells::cell($item->margin === null ? null : (float) $item->margin, $money, csv: $writer instanceof CsvWriter),
+                        SpreadsheetCells::cell((float) $item->bill_amount, $money, csv: $writer instanceof CsvWriter),
+                        SpreadsheetCells::cell($order->status->getLabel(), csv: $writer instanceof CsvWriter),
+                        SpreadsheetCells::cell($order->order_no, csv: $writer instanceof CsvWriter),
                     ]));
                     $rowCount++;
                 }

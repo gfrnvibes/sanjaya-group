@@ -25,12 +25,12 @@ class ResellerReceivable extends ReadOnlyModel
     /** @return BelongsTo<Reseller, $this> */
     public function reseller(): BelongsTo
     {
-        return $this->belongsTo(Reseller::class);
+        return $this->belongsTo(Reseller::class)->withTrashed();
     }
 
     /** @return BelongsTo<Owner, $this> */
     public function owner(): BelongsTo
     {
-        return $this->belongsTo(Owner::class);
+        return $this->belongsTo(Owner::class)->withTrashed();
     }
 }

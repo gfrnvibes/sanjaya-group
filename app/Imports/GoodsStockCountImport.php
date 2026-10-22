@@ -40,7 +40,7 @@ class GoodsStockCountImport extends RowImporter
             'NAMA PRODUK' => ['name', '-', 'Info dari sistem.'],
             'STOK SISTEM' => ['system_qty', '-', 'Stok menurut sistem saat file di-export (info).'],
             'STOK FISIK' => ['counted_qty', 'Untuk SKU yang dihitung', 'Hasil hitung fisik di rak (bilangan bulat >= 0). Kosong = SKU tidak dihitung, diabaikan.'],
-            'TANGGAL OPNAME' => ['counted_at', '-', 'Tanggal hitung fisik. Kosong = hari ini.'],
+            'TANGGAL OPNAME' => ['counted_at', '-', 'Waktu hitung fisik (YYYY-MM-DD HH:MM:SS, WIB). Kosong = saat impor.'],
             'CATATAN' => ['note', '-', 'Catatan dokumen opname (baris pertama per gudang + tanggal).'],
         ];
     }
@@ -60,7 +60,7 @@ class GoodsStockCountImport extends RowImporter
         return [
             'Alur: Export -> hitung fisik -> isi STOK FISIK -> Import. Selisih dicatat sebagai Stok Opname, stok tidak ditimpa langsung.',
             'Baris dengan gudang + tanggal opname sama menjadi 1 dokumen Stok Opname. Pilih "langsung posting" saat import, atau periksa dulu di menu Stok Opname lalu klik Posting.',
-            'Selisih dihitung dari stok sistem SAAT POSTING. Bila ada penjualan/barang masuk setelah file di-export, muncul peringatan.',
+            'Selisih dihitung dari stok sistem PADA WAKTU HITUNG. Bila ada penjualan/barang masuk setelah file di-export, muncul peringatan.',
         ];
     }
 
@@ -70,7 +70,7 @@ class GoodsStockCountImport extends RowImporter
             return '#skip';
         }
 
-        return Str::lower($row->text('warehouse')).'|'.(Spreadsheet::parseDate($row->text('counted_at')) ?? today()->toDateString());
+        return Str::lower($row->text('warehouse')).'|'.(Spreadsheet::parseCountedAt($row->text('counted_at'))?->format('Y-m-d H:i:s') ?? '#current');
     }
 
     protected function save(Collection $rows): void
@@ -82,12 +82,12 @@ class GoodsStockCountImport extends RowImporter
             return; // STOK FISIK kosong: SKU tidak dihitung.
         }
 
-        $countedAt = $first->date('counted_at', 'TANGGAL OPNAME') ?? today()->toDateString();
+        $countedAt = $first->countedAt('counted_at');
         $first->throwIfInvalid();
 
         $warehouse = $this->findWarehouse($first->text('warehouse'));
 
-        $items = collect($this->eachLine($rows, function (SpreadsheetRow $row) use ($warehouse): array {
+        $items = collect($this->eachLine($rows, function (SpreadsheetRow $row) use ($warehouse, $countedAt): array {
             $row->requireText(['sku' => 'SKU VARIAN']);
             $counted = $row->number('counted_qty', 'STOK FISIK', min: 0, required: true, integer: true);
             $exported = $row->number('system_qty', 'STOK SISTEM', integer: true);
@@ -95,10 +95,10 @@ class GoodsStockCountImport extends RowImporter
 
             $variant = ProductVariant::query()->whereRaw('lower(sku) = ?', [Str::lower($row->text('sku'))])->first()
                 ?? throw new BusinessRuleException("SKU {$row->text('sku')} tidak ditemukan");
-            $current = $this->ledger->stockQty($variant->id, $warehouse->id);
+            $current = $this->ledger->stockQtyAt($variant->id, $warehouse->id, $countedAt);
 
             if ($exported !== null && (int) $exported !== $current) {
-                $this->warn("{$variant->sku}: stok sistem berubah sejak export ({$exported} -> {$current}); selisih dihitung dari stok terkini.");
+                $this->warn("{$variant->sku}: stok sistem berubah sejak export ({$exported} -> {$current}); selisih dihitung pada waktu hitung fisik.");
             }
 
             return ['variant_id' => $variant->id, 'sku' => $variant->sku, 'system_qty' => $current, 'counted_qty' => (int) $counted];

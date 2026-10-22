@@ -148,7 +148,7 @@ class ResellerPriceHistoryResource extends Resource
      */
     public static function canDelete(Model $record): bool
     {
-        return $record->salesOrderItems()->doesntExist();
+        return parent::canDelete($record) && $record->salesOrderItems()->doesntExist();
     }
 
     public static function getPages(): array

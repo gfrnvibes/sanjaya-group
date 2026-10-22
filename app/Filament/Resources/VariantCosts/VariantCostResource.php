@@ -135,7 +135,7 @@ class VariantCostResource extends Resource
      */
     public static function canDelete(Model $record): bool
     {
-        return $record->priceHistories()->doesntExist();
+        return parent::canDelete($record) && $record->priceHistories()->doesntExist();
     }
 
     public static function getPages(): array

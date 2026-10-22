@@ -4,11 +4,18 @@ namespace App\Filament\Resources\SalesImportFailures\Tables;
 
 use App\Enums\ImportFailureReason;
 use App\Enums\ImportFailureStatus;
+use App\Enums\SalesOrderStatus;
+use App\Models\ProductVariant;
 use App\Models\SalesImportFailure;
+use App\Models\Warehouse;
+use App\Services\SalesOrderImporter;
 use App\Services\SalesOrderSpreadsheet;
+use App\Support\ApplicationAccess;
 use Filament\Actions\Action;
 use Filament\Actions\BulkAction;
 use Filament\Actions\BulkActionGroup;
+use Filament\Forms\Components\Select;
+use Filament\Notifications\Notification;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Contracts\HasTable;
@@ -96,6 +103,49 @@ class SalesImportFailuresTable
                         ->deleteFileAfterSend()),
             ])
             ->recordActions([
+                Action::make('correctSku')
+                    ->label('Perbaiki SKU')
+                    ->icon(Heroicon::OutlinedPencilSquare)
+                    ->authorize(fn (): bool => ApplicationAccess::allows('kelola penjualan'))
+                    ->visible(fn (SalesImportFailure $record): bool => $record->line > 0 && $record->status === ImportFailureStatus::Open)
+                    ->modalHeading('Perbaiki SKU dan coba impor ulang')
+                    ->modalDescription(fn (SalesImportFailure $record): string => 'Toko: '.$record->value('NAMA TOKO').' | Tanggal: '.$record->value('TANGGAL').' | Qty: '.$record->value('QTY').' | SKU awal: '.($record->value('SKU VARIAN') ?? $record->value('SKU BIG SELLER') ?? '-'))
+                    ->modalSubmitActionLabel('Simpan dan coba ulang')
+                    ->schema([
+                        Select::make('sku')
+                            ->label('SKU yang benar')
+                            ->searchable()
+                            ->getSearchResultsUsing(fn (string $search): array => ProductVariant::query()
+                                ->where('is_active', true)
+                                ->where(fn (Builder $query) => $query->where('sku', 'ilike', '%'.$search.'%')->orWhere('name', 'ilike', '%'.$search.'%'))
+                                ->orderBy('sku')->limit(50)->get()->mapWithKeys(fn (ProductVariant $variant): array => [$variant->sku => $variant->sku.' - '.$variant->name])->all())
+                            ->getOptionLabelUsing(fn ($value): ?string => ($variant = ProductVariant::query()->where('sku', $value)->where('is_active', true)->first()) ? $variant->sku.' - '.$variant->name : null)
+                            ->helperText('Ketik SKU atau nama produk, lalu pilih varian. Koreksi hanya untuk baris ini; pemetaan SKU lainnya tetap.')
+                            ->required(),
+                        Select::make('warehouse_id')
+                            ->label('Gudang asal')
+                            ->options(fn (): array => Warehouse::goodsOptions())
+                            ->default(fn () => Warehouse::defaultForGoods()?->id)
+                            ->helperText('Pilih gudang yang digunakan pada impor awal.')
+                            ->required(),
+                        Select::make('status')
+                            ->label('Status pesanan')
+                            ->options([
+                                SalesOrderStatus::Completed->value => SalesOrderStatus::Completed->getLabel(),
+                                SalesOrderStatus::Pending->value => SalesOrderStatus::Pending->getLabel(),
+                            ])
+                            ->default(SalesOrderStatus::Completed->value)
+                            ->required(),
+                    ])
+                    ->action(function (SalesImportFailure $record, array $data, SalesOrderImporter $importer): void {
+                        $result = $importer->retryFailure($record, $data['sku'], ['warehouse_id' => (int) $data['warehouse_id'], 'status' => $data['status']]);
+                        if ($result['errors'] !== []) {
+                            Notification::make()->title('Baris masih gagal diimpor')->body(e(implode("\n", $result['errors'])))->danger()->persistent()->send();
+
+                            return;
+                        }
+                        Notification::make()->title($result['created'] > 0 ? 'SKU diperbaiki dan pesanan berhasil disimpan' : 'Pesanan sudah tercatat; tidak ditambahkan lagi')->success()->send();
+                    }),
                 Action::make('ignore')
                     ->label('Abaikan')
                     ->icon(Heroicon::OutlinedEyeSlash)

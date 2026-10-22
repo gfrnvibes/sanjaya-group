@@ -50,6 +50,10 @@ class PricingService
             ->orderByDesc('effective_from')
             ->value('total_cost');
 
+        if ($hpp === null) {
+            throw new MissingPriceException('HPP varian belum tersedia pada tanggal '.$date.'. Lengkapi harga bahan/resep terlebih dahulu.');
+        }
+
         return [
             'reseller_price_id' => (int) $price->price_id,
             'tier_adjustment_pct' => $tierPct,

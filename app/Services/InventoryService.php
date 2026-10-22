@@ -99,9 +99,9 @@ class InventoryService
      */
     public function fillOpnameFromStock(StockOpname $opname): int
     {
-        $this->ensureDraft($opname);
-
         return DB::transaction(function () use ($opname): int {
+            $opname = StockOpname::query()->lockForUpdate()->findOrFail($opname->id);
+            $this->ensureDraft($opname);
             $existing = $opname->items()->pluck('variant_id')->all();
             $balances = StockBalance::query()
                 ->where('warehouse_id', $opname->warehouse_id)
@@ -111,8 +111,8 @@ class InventoryService
             foreach ($balances as $balance) {
                 $opname->items()->create([
                     'variant_id' => $balance->variant_id,
-                    'system_qty' => $balance->qty,
-                    'counted_qty' => max($balance->qty, 0),
+                    'system_qty' => $this->ledger->stockQtyAt($balance->variant_id, $opname->warehouse_id, $opname->counted_at),
+                    'counted_qty' => max($this->ledger->stockQtyAt($balance->variant_id, $opname->warehouse_id, $opname->counted_at), 0),
                 ]);
             }
 
@@ -121,19 +121,25 @@ class InventoryService
     }
 
     /**
-     * Posting opname: system_qty diambil ulang dari saldo terkini, selisih -> ledger(opname).
+     * Posting opname: system_qty dihitung pada counted_at, selisih -> ledger(opname).
      */
     public function postOpname(StockOpname $opname): void
     {
-        $this->ensureDraft($opname);
-
-        if ($opname->items()->doesntExist()) {
-            throw new BusinessRuleException('Opname belum punya baris hitung.');
-        }
-
         DB::transaction(function () use ($opname): void {
-            foreach ($opname->items as $item) {
-                $item->update(['system_qty' => $this->ledger->stockQty($item->variant_id, $opname->warehouse_id)]);
+            $opname = StockOpname::query()->lockForUpdate()->findOrFail($opname->id);
+            $this->ensureDraft($opname);
+
+            if ($opname->items()->doesntExist()) {
+                throw new BusinessRuleException('Opname belum punya baris hitung.');
+            }
+
+            if ($opname->counted_at->isFuture()) {
+                throw new BusinessRuleException('Waktu opname tidak boleh di masa depan.');
+            }
+            foreach ($opname->items()->orderBy('variant_id')->get() as $item) {
+                $this->ledger->lockBalance('stock', $item->variant_id, $opname->warehouse_id);
+                $this->ledger->ensureNoLaterCount('stock', $item->variant_id, $opname->warehouse_id, $opname->counted_at);
+                $item->update(['system_qty' => $this->ledger->stockQtyAt($item->variant_id, $opname->warehouse_id, $opname->counted_at)]);
                 $item->refresh();
 
                 if ($item->diff !== 0) {

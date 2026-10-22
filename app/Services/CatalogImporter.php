@@ -1006,10 +1006,11 @@ class CatalogImporter
         } catch (BusinessRuleException $exception) {
             $this->errors[] = "{$where}: ".rtrim($exception->getMessage(), '.').'.';
         } catch (QueryException $exception) {
-            $this->errors[] = "{$where}: gagal disimpan (".Str::limit(strtok($exception->getMessage(), "\n") ?: 'kesalahan database', 160).').';
+            report($exception);
+            $this->errors[] = "{$where}: gagal disimpan. Periksa data atau hubungi administrator.";
         } catch (Throwable $exception) {
             report($exception);
-            $this->errors[] = "{$where}: terjadi kesalahan ({$exception->getMessage()}).";
+            $this->errors[] = "{$where}: terjadi kesalahan. Hubungi administrator.";
         }
 
         $this->pending = [];

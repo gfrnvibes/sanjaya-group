@@ -4,7 +4,6 @@ namespace App\Filament\Resources\WorkOrders\Schemas;
 
 use App\Models\ProductVariant;
 use App\Models\Warehouse;
-use App\Models\WorkOrder;
 use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\Repeater;
 use Filament\Forms\Components\Repeater\TableColumn;
@@ -27,8 +26,7 @@ class WorkOrderForm
                     ->schema([
                         TextInput::make('code')
                             ->label('No. SPK')
-                            ->default(fn (): string => 'SPK-'.now()->format('ymd').'-'.str_pad((string) (WorkOrder::query()->whereDate('created_at', today())->count() + 1), 2, '0', STR_PAD_LEFT))
-                            ->required()
+                            ->helperText('Kosong = nomor otomatis saat disimpan.')
                             ->maxLength(30)
                             ->unique(ignoreRecord: true)
                             ->disabledOn('edit'),

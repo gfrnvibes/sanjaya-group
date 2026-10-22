@@ -34,7 +34,7 @@ class MaterialStockCountImport extends RowImporter
             'SATUAN' => ['uom', '-', 'Satuan dasar (info). STOK FISIK diisi dalam satuan ini, mis. cm.'],
             'STOK SISTEM' => ['system_qty', '-', 'Saldo menurut sistem saat file di-export (info).'],
             'STOK FISIK' => ['counted_qty', 'Untuk bahan yang dihitung', 'Hasil hitung fisik dalam satuan dasar (>= 0). Kosong = tidak dihitung, diabaikan.'],
-            'TANGGAL OPNAME' => ['counted_at', '-', 'Tanggal hitung fisik. Kosong = hari ini.'],
+            'TANGGAL OPNAME' => ['counted_at', '-', 'Waktu hitung fisik (YYYY-MM-DD HH:MM:SS, WIB). Kosong = saat impor.'],
             'CATATAN' => ['note', '-', ''],
         ];
     }
@@ -53,7 +53,7 @@ class MaterialStockCountImport extends RowImporter
     {
         return [
             'Alur: Export -> hitung fisik -> isi STOK FISIK -> Import. Selisih dicatat di kartu stok bahan (jenis Opname), saldo tidak ditimpa langsung.',
-            'Selisih dihitung dari saldo SAAT IMPORT. Bila ada pembelian/pemakaian bahan setelah file di-export, muncul peringatan.',
+            'Selisih dihitung dari saldo PADA WAKTU HITUNG. Bila ada pembelian/pemakaian bahan setelah file di-export, muncul peringatan.',
         ];
     }
 
@@ -69,7 +69,7 @@ class MaterialStockCountImport extends RowImporter
         $row->requireText(['warehouse' => 'KODE GUDANG', 'code' => 'KODE BAHAN']);
         $counted = $row->number('counted_qty', 'STOK FISIK', min: 0, required: true);
         $exported = $row->number('system_qty', 'STOK SISTEM');
-        $countedAt = $row->date('counted_at', 'TANGGAL OPNAME') ?? today()->toDateString();
+        $countedAt = $row->countedAt('counted_at');
         $row->maxLength(['note' => ['CATATAN', 200]]);
         $row->throwIfInvalid();
 
@@ -82,10 +82,12 @@ class MaterialStockCountImport extends RowImporter
 
         $material = $this->findCi(Material::query(), 'code', $row->text('code'))
             ?? throw new BusinessRuleException("bahan {$row->text('code')} tidak ditemukan");
-        $current = (float) $this->ledger->materialQty($material->id, $warehouse->id);
+        $this->ledger->lockBalance('material', $material->id, $warehouse->id);
+        $this->ledger->ensureNoLaterCount('material', $material->id, $warehouse->id, $countedAt);
+        $current = $this->ledger->materialQtyAt($material->id, $warehouse->id, $countedAt);
 
         if ($exported !== null && round($exported, 3) !== round($current, 3)) {
-            $this->warn("{$material->code}: saldo berubah sejak export ({$exported} -> {$current}); selisih dihitung dari saldo terkini.");
+            $this->warn("{$material->code}: saldo berubah sejak export ({$exported} -> {$current}); selisih dihitung pada waktu hitung fisik.");
         }
 
         $diff = round($counted - $current, 3);

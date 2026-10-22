@@ -29,13 +29,13 @@ class Expense extends Model
     /** @return BelongsTo<Store, $this> */
     public function store(): BelongsTo
     {
-        return $this->belongsTo(Store::class);
+        return $this->belongsTo(Store::class)->withTrashed();
     }
 
     /** @return BelongsTo<Reseller, $this> */
     public function reseller(): BelongsTo
     {
-        return $this->belongsTo(Reseller::class);
+        return $this->belongsTo(Reseller::class)->withTrashed();
     }
 
     /** @return BelongsTo<CashAccount, $this> */

@@ -23,7 +23,7 @@ class StoreAdSpend extends Model
     /** @return BelongsTo<Store, $this> */
     public function store(): BelongsTo
     {
-        return $this->belongsTo(Store::class);
+        return $this->belongsTo(Store::class)->withTrashed();
     }
 
     /** @return BelongsTo<User, $this> */

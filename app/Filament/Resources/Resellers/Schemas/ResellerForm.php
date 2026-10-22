@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\Resellers\Schemas;
 
+use App\Models\Reseller;
 use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
@@ -20,6 +21,7 @@ class ResellerForm
                     ->columnSpanFull()
                     ->schema([
                         Select::make('owner_id')
+                            ->disabled(fn (?Reseller $record): bool => $record?->stores()->exists() ?? false)
                             ->label('Pemilik')
                             ->relationship('owner', 'name')
                             ->searchable()

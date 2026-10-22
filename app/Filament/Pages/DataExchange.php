@@ -9,6 +9,7 @@ use App\Imports\GoodsStockCountImport;
 use App\Imports\MaterialStockCountImport;
 use App\Services\CatalogImporter;
 use App\Services\CatalogSpreadsheet;
+use App\Support\ApplicationAccess;
 use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Actions\ActionGroup;
@@ -27,6 +28,11 @@ use Filament\Support\Icons\Heroicon;
  */
 class DataExchange extends Page
 {
+    public static function canAccess(): bool
+    {
+        return ApplicationAccess::allows('administrator');
+    }
+
     protected static string $routePath = 'import-export';
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedArrowsRightLeft;
