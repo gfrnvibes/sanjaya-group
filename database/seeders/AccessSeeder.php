@@ -10,5 +10,7 @@ class AccessSeeder extends Seeder
     public function run(): void
     {
         Artisan::call('access:setup');
+
+        $this->call(AdminSeeder::class);
     }
 }
