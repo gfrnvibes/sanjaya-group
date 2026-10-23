@@ -14,6 +14,7 @@ use Filament\Schemas\Components\Component;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Contracts\HasTable;
 use Illuminate\Contracts\Support\Htmlable;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
@@ -55,6 +56,7 @@ class ResourceIo
                         ->deleteFileAfterSend()))
                 ->values()
                 ->all(),
+            self::printAction(),
             ...$extra,
         ])
             ->label('Export')
@@ -62,6 +64,24 @@ class ResourceIo
             ->tooltip('Export data sesuai filter & pencarian tabel')
             ->button()
             ->color('gray');
+    }
+
+    /**
+     * Cetak / PDF: halaman cetak (kolom yang tampil, sesuai filter) dibuka di tab baru lalu dialog print muncul
+     * ("Simpan sebagai PDF"). HTML disimpan sementara di cache, hanya bisa dibuka user yang membuatnya.
+     */
+    public static function printAction(): Action
+    {
+        return Action::make('ioExport_print')
+            ->authorize(fn (HasTable $livewire): bool => ! method_exists($livewire, 'getResource') || $livewire::getResource()::canViewAny())
+            ->label('Tabel ini – Cetak / PDF')
+            ->icon(Heroicon::OutlinedPrinter)
+            ->action(function (HasTable $livewire, TableExporter $exporter): void {
+                $token = (string) Str::uuid();
+                Cache::put("print:{$token}", ['user' => auth()->id(), 'html' => $exporter->printHtml($livewire, self::title($livewire))], now()->addMinutes(15));
+
+                $livewire->js('window.open('.json_encode(route('filament.administrator.print', ['token' => $token])).", '_blank')");
+            });
     }
 
     /**

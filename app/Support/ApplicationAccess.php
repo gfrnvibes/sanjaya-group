@@ -2,7 +2,9 @@
 
 namespace App\Support;
 
+use App\Imports\ImportRegistry;
 use App\Models\ReadOnlyModel;
+use App\Models\SalesImportFailure;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Model;
 
@@ -21,15 +23,25 @@ class ApplicationAccess
     /** @param Model|class-string<Model> $model */
     public static function model(string $ability, Model|string $model, User $user): bool
     {
+        // Import Perlu Dicek: semua kategori data; tiap user hanya melihat kategori yang boleh ia impor.
+        if (class_basename($model) === 'SalesImportFailure') {
+            $categories = collect(ImportRegistry::all());
+
+            return $model instanceof SalesImportFailure
+                ? isset($categories[$model->importer]) && self::allows($categories[$model->importer]['permission'], $user)
+                : $categories->pluck('permission')->unique()->contains(fn (string $permission): bool => self::allows($permission, $user));
+        }
+
         $permission = match (class_basename($model)) {
-            'User', 'Role', 'Permission', 'Setting' => 'administrator',
-            'SalesOrder', 'SalesOrderItem', 'SalesReturn', 'SalesImportBatch', 'SalesImportFailure', 'SkuAlias' => 'kelola penjualan',
+            'User', 'Role', 'Permission', 'Setting', 'Activity' => 'administrator',
+            'SalesOrder', 'SalesOrderItem', 'SalesReturn', 'SalesImportBatch', 'SkuAlias' => 'kelola penjualan',
             'StockMovement', 'StockBalance', 'MaterialMovement', 'MaterialBalance', 'StockOpname', 'StockOpnameItem', 'StockAdjustment', 'StockAdjustmentItem', 'GoodsReceipt', 'GoodsReceiptItem', 'Warehouse', 'Supplier', 'MaterialPurchase', 'MaterialPurchaseItem' => 'kelola stok',
             'WorkOrder', 'WorkOrderItem', 'Tailor' => 'kelola produksi',
-            'ResellerInvoice', 'ResellerPayment', 'TailorPayment', 'CashAccount', 'Expense', 'ExpenseCategory', 'StoreAdSpend' => 'kelola keuangan',
+            'ResellerInvoice', 'ResellerPayment', 'TailorPayment', 'CashAccount', 'Expense', 'ExpenseCategory', 'StoreAdSpend', 'SupplierPayment', 'SupplierBillLine' => 'kelola keuangan',
             'Owner', 'OwnerTierHistory', 'Reseller', 'Store', 'Channel', 'ChannelFeeRate', 'PriceTier' => 'kelola mitra',
             'KonveksiMonthlyProfit', 'StoreMonthlyProfit', 'ResellerReceivable', 'SalesLine' => 'lihat laporan',
-            'ProductModel', 'ProductVariant', 'ProductCategory', 'Color', 'Size', 'Material', 'MaterialType', 'LaborType', 'Bom', 'BomItem', 'VariantCost', 'ResellerPriceHistory', 'VariantPricing' => 'kelola katalog',
+            'ProductModel', 'ProductVariant', 'ProductCategory', 'Color', 'Size', 'Material', 'MaterialType', 'LaborType', 'Bom', 'BomItem', 'VariantCost', 'ResellerPriceHistory', 'VariantPricing', 'SupplierWholesalePrice' => 'kelola katalog',
+            'StockLot' => 'kelola stok',
             default => null,
         };
 

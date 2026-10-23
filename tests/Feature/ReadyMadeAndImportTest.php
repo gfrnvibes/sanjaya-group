@@ -2,6 +2,7 @@
 
 use App\Enums\GoodsReceiptSource;
 use App\Enums\VariantCostSource;
+use App\Enums\WageType;
 use App\Imports\ChannelImport;
 use App\Imports\OwnerImport;
 use App\Imports\PriceTierImport;
@@ -18,6 +19,7 @@ use App\Models\TailorPayment;
 use App\Models\VariantPricing;
 use App\Services\CatalogImporter;
 use App\Services\CatalogSpreadsheet;
+use App\Services\CostingService;
 use App\Services\InventoryService;
 use App\Services\PricingService;
 use App\Services\WorkOrderService;
@@ -74,11 +76,11 @@ it('prices ready made products from purchase price plus packing and the ready ma
         ->and((float) $cost->material_cost)->toBe(40000.0)
         ->and((float) $cost->labor_cost)->toBe(1000.0);
 
-    // (40.000 + 1.000) x 1,05 + 2.000 = 45.050 -> dibulatkan ke atas 100 = 45.100
+    // (40.000 + 1.000) x 1,05 = 43.050 -> dibulatkan ke atas 100 = 43.100
     $price = $variant->priceHistories()->first();
-    expect((float) $price->base_price)->toBe(45100.0)
+    expect((float) $price->base_price)->toBe(43100.0)
         ->and($price->effective_from->toDateString())->toBe('2026-10-01')
-        ->and((float) VariantPricing::find($variant->id)->proposed_price)->toBe(45100.0);
+        ->and((float) VariantPricing::find($variant->id)->proposed_price)->toBe(43100.0);
 });
 
 it('uses the variant packing cost and the latest purchase price for a new receipt date', function () {
@@ -91,8 +93,8 @@ it('uses the variant packing cost and the latest purchase price for a new receip
 
     $prices = $variant->priceHistories()->orderBy('effective_from')->pluck('base_price')->map(fn ($price): float => (float) $price)->all();
 
-    // (40.000 + 500) x 1,05 + 2.000 = 44.525 -> 44.600; (50.000 + 500) x 1,05 + 2.000 = 55.025 -> 55.100
-    expect($prices)->toBe([44600.0, 55100.0]);
+    // (40.000 + 500) x 1,05 = 42.525 -> 42.600; (50.000 + 500) x 1,05 = 53.025 -> 53.100
+    expect($prices)->toBe([42600.0, 53100.0]);
 });
 
 it('skips the ready made price with a clear reason when no purchase price exists', function () {
@@ -189,4 +191,69 @@ it('round trips own-model imports for models, owners, channels and price tiers',
         expect($again['errors'])->toBe([])
             ->and(collect($again['stats'])->sum('updated'))->toBe(0);
     }
+});
+
+it('pays tailors only the JAHIT labor of the recipe, not cutting or other labor', function () {
+    $f = businessFixture();
+    $cut = LaborType::create(['code' => 'POTONG', 'name' => 'Potong']);
+    $sew = LaborType::create(['code' => 'JAHIT', 'name' => 'Jahit']);
+    $f['bom']->items()->create(['line_type' => 'labor', 'labor_type_id' => $cut->id, 'labor_rate' => 1000, 'qty_per_unit' => 1]);
+    $f['bom']->items()->create(['line_type' => 'labor', 'labor_type_id' => $sew->id, 'labor_rate' => 4000, 'qty_per_unit' => 1]);
+
+    $workOrder = app(WorkOrderService::class)->create(
+        ['warehouse_id' => $f['materialWarehouse']->id, 'goods_warehouse_id' => $f['warehouse']->id, 'cut_date' => '2026-10-01'],
+        [['variant_id' => $f['variant']->id, 'qty_cut' => 10]],
+    );
+
+    expect((float) $workOrder->items()->sole()->labor_cost_snapshot)->toBe(5000.0)
+        ->and($workOrder->laborDue())->toBe(40000.0);
+});
+
+it('pays the cutter POTONG labor per cut piece and records the cutter on the work order', function () {
+    $f = businessFixture();
+    $cut = LaborType::create(['code' => 'POTONG', 'name' => 'Potong']);
+    $sew = LaborType::create(['code' => 'JAHIT', 'name' => 'Jahit']);
+    $f['bom']->items()->create(['line_type' => 'labor', 'labor_type_id' => $cut->id, 'labor_rate' => 1000, 'qty_per_unit' => 1]);
+    $f['bom']->items()->create(['line_type' => 'labor', 'labor_type_id' => $sew->id, 'labor_rate' => 4000, 'qty_per_unit' => 1]);
+    $workOrder = app(WorkOrderService::class)->create(
+        ['warehouse_id' => $f['materialWarehouse']->id, 'goods_warehouse_id' => $f['warehouse']->id, 'cut_date' => '2026-10-01'],
+        [['variant_id' => $f['variant']->id, 'qty_cut' => 10]],
+    );
+    $cutter = Tailor::create(['name' => 'Mas Potong']);
+
+    expect($workOrder->laborDue(null, WageType::Potong))->toBe(10000.0)
+        ->and($workOrder->laborDue())->toBe(40000.0);
+
+    TailorPayment::create(['tailor_id' => $cutter->id, 'work_order_id' => $workOrder->id, 'wage_type' => 'potong', 'paid_at' => '2026-10-04', 'amount' => 10000]);
+
+    $workOrder->refresh();
+    expect($workOrder->cutter_id)->toBe($cutter->id)
+        ->and($workOrder->tailor_id)->toBeNull()
+        ->and($workOrder->laborDue(null, WageType::Potong))->toBe(0.0)
+        ->and($workOrder->laborDue())->toBe(40000.0);
+});
+
+it('pays wages by the labor type "dibayar sebagai" setting, whatever its code', function () {
+    $f = businessFixture();
+    $sew = LaborType::create(['code' => 'JHT-01', 'name' => 'Ongkos tukang', 'wage_type' => 'jahit']);
+    $cut = LaborType::create(['code' => 'PTG', 'name' => 'Potong kain']); // ditebak dari nama
+    $embroidery = LaborType::create(['code' => 'BRD', 'name' => 'Bordir']);
+    $f['bom']->items()->create(['line_type' => 'labor', 'labor_type_id' => $sew->id, 'labor_rate' => 4000, 'qty_per_unit' => 1]);
+
+    expect($cut->wage_type)->toBe(WageType::Potong)
+        ->and($embroidery->wage_type)->toBeNull()
+        ->and(app(CostingService::class)->wageWarnings($f['bom']->refresh()))->toHaveCount(1);
+
+    $f['bom']->items()->create(['line_type' => 'labor', 'labor_type_id' => $cut->id, 'labor_rate' => 1000, 'qty_per_unit' => 1]);
+    $f['bom']->items()->create(['line_type' => 'labor', 'labor_type_id' => $embroidery->id, 'labor_rate' => 3000, 'qty_per_unit' => 1]);
+
+    $workOrder = app(WorkOrderService::class)->create(
+        ['warehouse_id' => $f['materialWarehouse']->id, 'goods_warehouse_id' => $f['warehouse']->id, 'cut_date' => '2026-10-01'],
+        [['variant_id' => $f['variant']->id, 'qty_cut' => 10]],
+    );
+
+    expect(app(CostingService::class)->wageWarnings($f['bom']->refresh()))->toBe([])
+        ->and((float) $workOrder->items()->sole()->labor_cost_snapshot)->toBe(8000.0)
+        ->and($workOrder->laborTotal())->toBe(40000.0)
+        ->and($workOrder->laborTotal(WageType::Potong))->toBe(10000.0);
 });

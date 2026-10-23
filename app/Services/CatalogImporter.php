@@ -10,6 +10,7 @@ use App\Enums\MaterialMovementType;
 use App\Enums\ProductKind;
 use App\Enums\WarehouseKind;
 use App\Exceptions\BusinessRuleException;
+use App\Imports\ImportIssueLog;
 use App\Models\Bom;
 use App\Models\BomItem;
 use App\Models\Color;
@@ -158,6 +159,9 @@ class CatalogImporter
     /** @var array<string, array{variant_id: int, date: ?string}> pemicu harga baris yang sedang diproses */
     private array $pendingTriggers = [];
 
+    /** @var array<string, ImportIssueLog> baris gagal per jenis sheet (masuk ke "Import Perlu Dicek") */
+    private array $issues = [];
+
     public function __construct(private InventoryService $inventory, private PricingService $pricing) {}
 
     /**
@@ -166,15 +170,10 @@ class CatalogImporter
      */
     public function import(string $path, string $fileName, ?array $only = null): array
     {
-        $this->stats = [];
-        $this->errors = [];
-        $this->warnings = [];
-        $this->priceTriggers = [];
-
         try {
             $sheets = Spreadsheet::readSheets($path, $fileName, collect(self::SHEETS)
                 ->when($only !== null, fn (Collection $sheets) => $sheets->only($only))
-                ->map(fn (array $sheet): array => ['headers' => [...$sheet['headers'], ...($sheet['system'] ?? [])], 'required' => $sheet['required']])
+                ->map(fn (array $sheet): array => ['headers' => [...$sheet['headers'], ...($sheet['system'] ?? []), ImportIssueLog::FAILURE_ID_COLUMN => 'failure_id'], 'required' => $sheet['required']])
                 ->all());
         } catch (BusinessRuleException $exception) {
             return ['rows' => 0, 'sheets' => [], 'stats' => [], 'errors' => [$exception->getMessage()], 'warnings' => []];
@@ -186,28 +185,84 @@ class CatalogImporter
             return ['rows' => 0, 'sheets' => [], 'stats' => [], 'errors' => ["Tidak ada sheet yang dikenali. Gunakan template (sheet {$titles})."], 'warnings' => []];
         }
 
+        return $this->process($sheets, $fileName);
+    }
+
+    /**
+     * Kunci kategori "Import Perlu Dicek" untuk satu jenis sheet, mis. catalog.products.
+     */
+    public static function issueKey(string $type): string
+    {
+        return 'catalog.'.$type;
+    }
+
+    /**
+     * Label header (merah + sistem) sheet katalog, urutan template.
+     *
+     * @return list<string>
+     */
+    public static function labels(string $type): array
+    {
+        return [...array_keys(self::SHEETS[$type]['headers']), ...array_keys(self::SHEETS[$type]['system'] ?? [])];
+    }
+
+    /**
+     * Coba ulang baris dari "Import Perlu Dicek" (nilai per LABEL HEADER).
+     *
+     * @param  list<array{line: int, values: array<string, mixed>, failure_id: ?int}>  $rows
+     * @return array{rows: int, sheets: list<string>, stats: array<string, array{created: int, updated: int, skipped: int}>, errors: list<string>, warnings: list<string>}
+     */
+    public function importValues(string $type, array $rows, string $fileName = 'Perbaikan langsung'): array
+    {
+        $map = [...self::SHEETS[$type]['headers'], ...(self::SHEETS[$type]['system'] ?? [])];
+
+        return $this->process([$type => array_map(fn (array $row): array => [
+            'sheet' => self::SHEETS[$type]['title'],
+            'line' => $row['line'],
+            'values' => [
+                ...collect($map)->mapWithKeys(fn (string $key, string $label): array => [$key => $row['values'][$label] ?? null])->all(),
+                'failure_id' => $row['failure_id'] ?? null,
+            ],
+        ], $rows)], $fileName);
+    }
+
+    /**
+     * @param  array<string, list<array{sheet: string, line: int, values: array<string, mixed>}>>  $sheets
+     */
+    private function process(array $sheets, string $fileName): array
+    {
+        $this->stats = [];
+        $this->errors = [];
+        $this->warnings = [];
+        $this->priceTriggers = [];
+        $this->issues = collect(array_keys($sheets))->mapWithKeys(fn (string $type): array => [$type => new ImportIssueLog(self::issueKey($type), $fileName)])->all();
+
         foreach ($sheets['materials'] ?? [] as $row) {
-            $this->attempt($this->where('materials', $row), fn () => $this->importMaterial($row['values']));
+            $this->attempt($this->where('materials', $row), fn () => $this->importMaterial($row['values']), 'materials', collect([$row]));
         }
 
         foreach ($sheets['products'] ?? [] as $row) {
-            $this->attempt($this->where('products', $row), fn () => $this->importProduct($row['values']));
+            $this->attempt($this->where('products', $row), fn () => $this->importProduct($row['values']), 'products', collect([$row]));
         }
 
         $this->groupRows($sheets['boms'] ?? [], fn (array $values): string => implode('|', [
             Str::lower(Spreadsheet::text($values['model_code'] ?? null)),
             Str::lower(Spreadsheet::text($values['size'] ?? null)),
             Spreadsheet::parseDate($values['effective_from'] ?? null) ?? Spreadsheet::text($values['effective_from'] ?? null),
-        ]))->each(fn (Collection $rows) => $this->attempt($this->whereGroup('boms', $rows), fn () => $this->importBom($rows)));
+        ]))->each(fn (Collection $rows, string $group) => $this->attempt($this->whereGroup('boms', $rows), fn () => $this->importBom($rows), 'boms', $rows, $group));
 
         $this->groupRows($sheets['purchases'] ?? [], fn (array $values): string => implode('|', [
             Spreadsheet::parseDate($values['date'] ?? null) ?? Spreadsheet::text($values['date'] ?? null),
             Str::lower(Spreadsheet::text($values['supplier'] ?? null)),
             Str::lower(Spreadsheet::text($values['ref_no'] ?? null)),
             Str::lower(Spreadsheet::text($values['warehouse'] ?? null)),
-        ]))->each(fn (Collection $rows) => $this->attempt($this->whereGroup('purchases', $rows), fn () => $this->importPurchase($rows)));
+        ]))->each(fn (Collection $rows, string $group) => $this->attempt($this->whereGroup('purchases', $rows), fn () => $this->importPurchase($rows), 'purchases', $rows, $group));
 
         $this->syncPrices();
+
+        foreach ($this->issues as $issues) {
+            $issues->save();
+        }
 
         return [
             'rows' => collect($sheets)->sum(fn (array $rows): int => count($rows)),
@@ -524,6 +579,10 @@ class CatalogImporter
         }
 
         $bom->items()->createMany($lines);
+
+        foreach (app(CostingService::class)->wageWarnings($bom->refresh()) as $warning) {
+            $this->warn($warning);
+        }
 
         $this->triggerPrice(
             ProductVariant::query()->where('model_id', $model->id)->when($size, fn ($query) => $query->where('size_id', $size->id))->pluck('id'),
@@ -911,8 +970,10 @@ class CatalogImporter
         }
 
         $this->bump('Jenis Ongkos', 'created');
+        $wageType = LaborType::guessWageType($code, $name);
+        $this->warn("jenis ongkos {$code} dibuat otomatis, dibayar sebagai: ".($wageType?->getLabel() ?? 'Biaya Operasional (bukan upah SPK)').' — cek di menu Jenis Ongkos Kerja.');
 
-        return LaborType::create(['code' => Str::upper(Str::limit($code, 20, '')), 'name' => Str::limit($name ?: $code, 60, '')]);
+        return LaborType::create(['code' => Str::upper(Str::limit($code, 20, '')), 'name' => Str::limit($name ?: $code, 60, ''), 'wage_type' => $wageType]);
     }
 
     /**
@@ -988,14 +1049,21 @@ class CatalogImporter
     /**
      * Jalankan 1 baris/dokumen dalam transaksi; statistik hanya dihitung bila tersimpan.
      */
-    private function attempt(string $where, callable $callback): void
+    /**
+     * @param  Collection<int, array{sheet: string, line: int, values: array<string, mixed>}>  $rows  baris dokumen (untuk Import Perlu Dicek)
+     */
+    private function attempt(string $where, callable $callback, string $type, Collection $rows, ?string $group = null): void
     {
         $this->pending = [];
         $this->pendingWarnings = [];
         $this->pendingTriggers = [];
+        $errorCount = count($this->errors);
+        $issues = $this->issues[$type];
 
         try {
             DB::transaction($callback);
+
+            $rows->each(fn (array $row) => $issues->fixed(ImportIssueLog::failureId($row['values']['failure_id'] ?? null)));
 
             foreach ($this->pending as $label => $counts) {
                 $this->stats[$label] ??= ['created' => 0, 'updated' => 0, 'skipped' => 0];
@@ -1018,6 +1086,21 @@ class CatalogImporter
         } catch (Throwable $exception) {
             report($exception);
             $this->errors[] = "{$where}: terjadi kesalahan. Hubungi administrator.";
+        }
+
+        if (count($this->errors) > $errorCount) {
+            $message = Str::after(end($this->errors), ': ');
+            $map = [...self::SHEETS[$type]['headers'], ...(self::SHEETS[$type]['system'] ?? [])];
+
+            foreach ($rows as $row) {
+                $issues->fail(
+                    $row['line'],
+                    collect($map)->map(fn (string $key) => Spreadsheet::text($row['values'][$key] ?? null))->all(),
+                    $message,
+                    retryOf: ImportIssueLog::failureId($row['values']['failure_id'] ?? null),
+                    groupKey: $group === null ? null : $type.'|'.$issues->uploadId.'|'.$group,
+                );
+            }
         }
 
         $this->pending = [];

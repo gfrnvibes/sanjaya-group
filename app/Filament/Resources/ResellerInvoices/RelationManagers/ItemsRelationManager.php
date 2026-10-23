@@ -37,6 +37,7 @@ class ItemsRelationManager extends RelationManager
                     ->label('Toko'),
                 TextColumn::make('variant.sku')
                     ->label('SKU')
+                    ->description(fn (SalesOrderItem $record): ?string => $record->is_consignment ? 'Titipan grosir bordir (harga supplier)' : null)
                     ->searchable(),
                 TextColumn::make('qty')
                     ->label('Qty')

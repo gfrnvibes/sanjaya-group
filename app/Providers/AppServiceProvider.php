@@ -12,6 +12,7 @@ use App\Models\User;
 use App\Models\WorkOrderItem;
 use App\Observers\BusinessRecordObserver;
 use App\Services\SalesDashboardService;
+use App\Services\SkuMatcher;
 use App\Support\ApplicationAccess;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\Relation;
@@ -33,6 +34,7 @@ class AppServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->app->scoped(SalesDashboardService::class);
+        $this->app->scoped(SkuMatcher::class); // indeks varian dibangun sekali per request (saran SKU per baris tabel)
     }
 
     /**

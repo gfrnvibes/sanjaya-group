@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\TailorPayments;
 
+use App\Enums\WageType;
 use App\Enums\WorkOrderStatus;
 use App\Filament\Resources\TailorPayments\Pages\ManageTailorPayments;
 use App\Filament\Resources\Tailors\RelationManagers\PaymentsRelationManager;
@@ -16,6 +17,7 @@ use Filament\Actions\EditAction;
 use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
+use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
@@ -40,17 +42,25 @@ class TailorPaymentResource extends Resource
 
     protected static ?string $modelLabel = 'Pembayaran Upah';
 
-    protected static ?string $pluralModelLabel = 'Pembayaran Upah Jahit';
+    protected static ?string $pluralModelLabel = 'Pembayaran Upah Jahit & Potong';
 
     public static function form(Schema $schema): Schema
     {
         return $schema
             ->components([
+                Select::make('wage_type')
+                    ->label('Jenis upah')
+                    ->options(WageType::class)
+                    ->default(WageType::Jahit->value)
+                    ->required()
+                    ->live()
+                    ->helperText('Upah Jahit = pcs x ongkos JAHIT (ke penjahit). Upah Potong = qty potong x ongkos POTONG (ke tukang potong).')
+                    ->afterStateUpdated(fn ($state, Get $get, Set $set, ?TailorPayment $record, $livewire) => self::fillDue($state, $get('work_order_id') ?? ($livewire instanceof TailorPaymentsRelationManager ? $livewire->getOwnerRecord()->getKey() : null), $set, $record)),
                 Select::make('tailor_id')
-                    ->label('Penjahit')
+                    ->label('Penjahit / tukang potong')
                     ->relationship('tailor', 'name', fn (Builder $query) => $query->where('is_active', true))
                     ->default(fn ($livewire) => $livewire instanceof TailorPaymentsRelationManager ? $livewire->getOwnerRecord()->tailor_id : null)
-                    ->helperText('SPK yang penjahitnya belum dicatat otomatis dicatat atas nama penjahit ini.')
+                    ->helperText('SPK yang orangnya belum dicatat otomatis dicatat atas nama orang ini (penjahit atau tukang potong, sesuai jenis upah).')
                     ->searchable()
                     ->preload()
                     ->required()
@@ -61,20 +71,17 @@ class TailorPaymentResource extends Resource
                     ->relationship('workOrder', 'code', function (Builder $query, Get $get, $livewire): Builder {
                         $tailorId = $get('tailor_id')
                             ?? ($livewire instanceof PaymentsRelationManager ? $livewire->getOwnerRecord()->getKey() : null);
+                        $column = self::wageType($get('wage_type')) === WageType::Potong ? 'cutter_id' : 'tailor_id';
 
-                        // SPK milik penjahit ini, atau SPK yang penjahitnya belum dicatat.
+                        // SPK milik orang ini (penjahit / tukang potong), atau SPK yang orangnya belum dicatat.
                         return $query
                             ->where('status', '!=', WorkOrderStatus::Cancelled)
-                            ->when($tailorId, fn (Builder $query) => $query->where(fn (Builder $query) => $query->where('tailor_id', $tailorId)->orWhereNull('tailor_id')));
+                            ->when($tailorId, fn (Builder $query) => $query->where(fn (Builder $query) => $query->where($column, $tailorId)->orWhereNull($column)));
                     })
-                    ->getOptionLabelFromRecordUsing(fn (WorkOrder $record): string => $record->code.($record->tailor_id === null ? ' (penjahit belum dicatat)' : ''))
-                    ->helperText('Jumlah terisi otomatis = sisa upah SPK (pcs x ongkos per pcs dari resep model).')
+                    ->getOptionLabelFromRecordUsing(fn (WorkOrder $record): string => $record->code.($record->tailor_id === null ? ' (penjahit belum dicatat)' : '').($record->cutter_id === null ? ' (tukang potong belum dicatat)' : ''))
+                    ->helperText('Jumlah terisi otomatis = sisa upah SPK sesuai jenis upah (ongkos dari resep model; obras/bordir tidak termasuk).')
                     ->live()
-                    ->afterStateUpdated(function ($state, Set $set, ?TailorPayment $record): void {
-                        if (filled($state) && ($workOrder = WorkOrder::find($state)) !== null) {
-                            $set('amount', $workOrder->laborDue($record?->id) ?: null);
-                        }
-                    })
+                    ->afterStateUpdated(fn ($state, Get $get, Set $set, ?TailorPayment $record) => self::fillDue($get('wage_type'), $state, $set, $record))
                     ->searchable()
                     ->preload()
                     ->hidden(fn ($livewire): bool => $livewire instanceof TailorPaymentsRelationManager),
@@ -99,6 +106,30 @@ class TailorPaymentResource extends Resource
             ]);
     }
 
+    private static function wageType(mixed $state): WageType
+    {
+        return $state instanceof WageType ? $state : (WageType::tryFrom((string) $state) ?? WageType::Jahit);
+    }
+
+    /**
+     * Isi Jumlah dengan sisa upah SPK untuk jenis upah yang dipilih.
+     */
+    private static function fillDue(mixed $type, mixed $workOrderId, Set $set, ?TailorPayment $record): void
+    {
+        if (filled($workOrderId) && ($workOrder = WorkOrder::find($workOrderId)) !== null) {
+            $wage = self::wageType($type);
+            $set('amount', $workOrder->laborDue($record?->id, $wage) ?: null);
+
+            if ($workOrder->laborTotal($wage) <= 0) {
+                Notification::make()
+                    ->title("{$wage->getLabel()} SPK {$workOrder->code} = Rp0")
+                    ->body('Resep model belum punya ongkos yang dibayar sebagai '.$wage->getLabel().' (menu Jenis Ongkos Kerja & Resep). Isi Jumlah manual bila perlu.')
+                    ->warning()
+                    ->send();
+            }
+        }
+    }
+
     public static function table(Table $table): Table
     {
         return $table
@@ -110,8 +141,11 @@ class TailorPaymentResource extends Resource
                     ->date()
                     ->sortable(),
                 TextColumn::make('tailor.name')
-                    ->label('Penjahit')
+                    ->label('Penjahit / tukang potong')
                     ->searchable(),
+                TextColumn::make('wage_type')
+                    ->label('Jenis upah')
+                    ->badge(),
                 TextColumn::make('workOrder.code')
                     ->label('SPK')
                     ->placeholder('-'),
@@ -129,9 +163,12 @@ class TailorPaymentResource extends Resource
             ])
             ->filters([
                 SelectFilter::make('tailor')
-                    ->label('Penjahit')
+                    ->label('Penjahit / tukang potong')
                     ->relationship('tailor', 'name')
                     ->preload(),
+                SelectFilter::make('wage_type')
+                    ->label('Jenis upah')
+                    ->options(WageType::class),
             ])
             ->recordActions([
                 EditAction::make(),

@@ -62,7 +62,8 @@ class CashAccountResource extends Resource
             ->modifyQueryUsing(fn ($query) => $query
                 ->withSum('resellerPayments as payments_in', 'amount')
                 ->withSum('expenses as expenses_out', 'amount')
-                ->withSum('tailorPayments as tailor_out', 'amount'))
+                ->withSum('tailorPayments as tailor_out', 'amount')
+                ->withSum('supplierPayments as supplier_out', 'amount'))
             ->columns([
                 TextColumn::make('name')
                     ->label('Nama')
@@ -81,6 +82,9 @@ class CashAccountResource extends Resource
                     ->money('IDR', decimalPlaces: 0),
                 TextColumn::make('tailor_out')
                     ->label('Keluar Upah Jahit')
+                    ->money('IDR', decimalPlaces: 0),
+                TextColumn::make('supplier_out')
+                    ->label('Keluar ke Supplier')
                     ->money('IDR', decimalPlaces: 0),
                 IconColumn::make('is_active')
                     ->label('Aktif')

@@ -9,23 +9,34 @@ use App\Enums\SalesImportSource;
 use App\Enums\SalesOrderStatus;
 use App\Exceptions\BusinessRuleException;
 use App\Exceptions\MissingPriceException;
+use App\Imports\ImportIssueLog;
+use App\Imports\ImportRegistry;
 use App\Models\ProductVariant;
 use App\Models\SalesImportBatch;
 use App\Models\SalesImportFailure;
 use App\Models\SalesOrder;
+use App\Models\SalesOrderItem;
 use App\Models\SkuAlias;
 use App\Models\Store;
 use App\Support\Spreadsheet;
+use Carbon\CarbonInterface;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Throwable;
 
 /**
- * Impor sheet "INPUT ORDERAN RESELLER": 1 baris = 1 pesanan.
+ * Impor pesanan: 1 baris = 1 pesanan (1 produk). Format file mengikuti Sumber Data (SalesImportSource):
+ *  - BigSeller: export pesanan BigSeller; Website: template dengan NO PESANAN. Nomor pesanan diambil dari file,
+ *    1 nomor pesanan boleh berisi beberapa baris produk (dikenali per nomor + SKU + urutan SKU yang sama);
+ *  - Manual / Shopee / TikTok / Lazada: template tanpa nomor pesanan; nomor dibuat otomatis.
+ * File baris gagal (kolom ID GAGAL) selalu bisa diimport ulang apa pun sumbernya.
  * Header dicari otomatis (boleh ada judul di atasnya & kolom otomatis di sampingnya).
  * Tiap baris disimpan terpisah: baris valid tersimpan, baris error dilaporkan.
  * Nomor/ID transaksi mengenali pesanan lintas file; sidik isi file dan nomor baris mengenali unggahan ulang.
+ * Status kosong = Diproses (barang dikirim, belum pasti selesai/retur); import ulang dengan status Selesai
+ * menyelesaikan pesanan Diproses yang sama.
+ * SKU yang belum dikenal dipetakan otomatis (opsi auto_map) bila penalaran SKU + nama produk + nama variasi cukup yakin.
  * Bisa beberapa file sekaligus (importMany): 1 file = 1 batch impor.
  * Baris gagal disimpan (nilai asli + kategori alasan) agar bisa diunduh, diperbaiki, lalu diimport ulang;
  * kolom ID GAGAL pada file baris gagal menandai baris lama sebagai sudah diperbaiki / gagal lagi.
@@ -51,18 +62,59 @@ class SalesOrderImporter
         'PENDAPATAN TOKO' => 'revenue',
         'NO PESANAN' => 'order_no',
         'ID TRANSAKSI IMPOR' => 'import_key',
+        'NAMA PRODUK' => 'product_name', // info untuk pencocokan SKU (opsional)
+        'NAMA VARIASI' => 'variation_name', // info untuk pencocokan SKU (opsional, mis. "Hitam,2XL")
     ];
 
-    /** Header export BigSeller (Analisa Bisnis > SKU Toko) => kunci. Kolom TANGGAL ditambahkan manual di belakang; sel kosong memakai tanggal dari form impor. */
-    public const BIGSELLER_COLUMNS = [
+    /**
+     * Minimal total qty per SKU per pesanan agar produk bordir dihitung harga grosir (tingkat harga sesuai menu Harga Grosir Bordir).
+     * Total = jumlah semua baris SKU yang sama (warna + ukuran sama) dalam 1 nomor pesanan; beda warna / ukuran tidak digabung.
+     * Tanpa nomor pesanan, 1 baris = 1 pesanan.
+     */
+    public const WHOLESALE_MIN_QTY = 10;
+
+    /** Template Manual / Shopee / TikTok / Lazada: tanpa nomor pesanan (kolom NO PESANAN diabaikan). */
+    public const MANUAL_COLUMNS = [
         'TANGGAL' => 'order_date',
         'NAMA TOKO' => 'store',
-        'NOMOR SKU TOKO' => 'sku_bigseller',
-        'PENJUALAN PRODUK VALID' => 'qty',
-        'DANA PENJUALAN PRODUK VALID' => 'revenue',
+        'SKU VARIAN' => 'sku',
+        'SKU TOKO' => 'sku_bigseller',
+        'SKU BIG SELLER' => 'sku_bigseller',
+        'SKU BIGSELLER' => 'sku_bigseller',
+        'SKU MARKETPLACE' => 'sku_bigseller',
+        'NAMA PRODUK' => 'product_name',
+        'NAMA VARIASI' => 'variation_name',
+        'QTY' => 'qty',
+        'PENDAPATAN TOKO' => 'revenue',
+    ];
+
+    /** Template Website: nomor pesanan wajib. SKU = SKU di website (dipetakan seperti SKU marketplace). */
+    public const WEBSITE_COLUMNS = [
+        'TANGGAL' => 'order_date',
+        'NAMA TOKO' => 'store',
         'NO PESANAN' => 'order_no',
         'NO. PESANAN' => 'order_no',
-        'ID TRANSAKSI IMPOR' => 'import_key',
+        'NOMOR PESANAN' => 'order_no',
+        'NAMA PRODUK' => 'product_name',
+        'SKU' => 'sku_bigseller',
+        'SKU VARIAN' => 'sku',
+        'NAMA VARIASI' => 'variation_name',
+        'QTY' => 'qty',
+        'JUMLAH' => 'qty',
+        'PENDAPATAN TOKO' => 'revenue',
+    ];
+
+    /** Header export pesanan BigSeller => kunci. 1 baris = 1 produk dalam pesanan. */
+    public const BIGSELLER_COLUMNS = [
+        'NOMOR PESANAN' => 'order_no',
+        'NAMA PANGGILAN TOKO BIGSELLER' => 'store',
+        'NAMA TOKO' => 'store',
+        'WAKTU PESANAN DIBUAT' => 'order_date',
+        'NAMA PRODUK' => 'product_name',
+        'SKU' => 'sku_bigseller',
+        'NAMA VARIASI' => 'variation_name',
+        'JUMLAH' => 'qty',
+        'SUBTOTAL PRODUK' => 'revenue',
     ];
 
     /** Kolom ID baris gagal (terisi di file baris gagal, kosong di file biasa). */
@@ -74,19 +126,30 @@ class SalesOrderImporter
     /** @var list<int> ID baris gagal lama yang berhasil diimport ulang */
     private array $fixed = [];
 
-    public function __construct(private SalesOrderService $orders) {}
+    /** @var array<string, string> SKU file => SKU varian yang dipetakan otomatis saat impor */
+    private array $mapped = [];
+
+    /** @var array{warehouse_id?: int, status?: ?string, source?: string, order_date?: ?string, auto_map?: bool} */
+    private array $options = [];
+
+    public function __construct(
+        private SalesOrderService $orders,
+        private SupplierBilling $billing,
+        private SkuMatcher $matcher,
+        private SkuMapping $mapping,
+    ) {}
 
     /**
      * Impor beberapa file sekaligus. Tiap file = 1 batch impor; pesanan dengan nomor/ID yang sama
      * dikenali kembali. Dua baris identik dalam satu file tetap menjadi dua pesanan terpisah.
      *
      * @param  list<array{path: string, name: string}>  $files
-     * @param  array{warehouse_id: int, status: string, source: string, order_date?: ?string}  $options
-     * @return array{batches: list<SalesImportBatch>, files: int, rows: int, created: int, skipped: int, fixed: int, errors: list<string>}
+     * @param  array{warehouse_id: int, status: ?string, source: string, order_date?: ?string, auto_map?: bool}  $options
+     * @return array{batches: list<SalesImportBatch>, files: int, rows: int, created: int, skipped: int, fixed: int, errors: list<string>, mapped: array<string, string>}
      */
     public function importMany(array $files, array $options): array
     {
-        $total = ['batches' => [], 'files' => count($files), 'rows' => 0, 'created' => 0, 'skipped' => 0, 'fixed' => 0, 'errors' => []];
+        $total = ['batches' => [], 'files' => count($files), 'rows' => 0, 'created' => 0, 'skipped' => 0, 'fixed' => 0, 'errors' => [], 'mapped' => []];
 
         foreach ($files as $file) {
             $result = $this->import($file['path'], $file['name'], $options);
@@ -96,6 +159,7 @@ class SalesOrderImporter
             $total['created'] += $result['created'];
             $total['skipped'] += $result['skipped'];
             $total['fixed'] += $result['fixed'];
+            $total['mapped'] += $result['mapped'];
 
             foreach ($result['errors'] as $error) {
                 $total['errors'][] = count($files) > 1 ? "{$file['name']} — {$error}" : $error;
@@ -106,8 +170,8 @@ class SalesOrderImporter
     }
 
     /**
-     * @param  array{warehouse_id: int, status: string, source: string, order_date?: ?string}  $options
-     * @return array{batch: SalesImportBatch, rows: int, created: int, skipped: int, fixed: int, errors: list<string>}
+     * @param  array{warehouse_id: int, status: ?string, source: string, order_date?: ?string, auto_map?: bool}  $options
+     * @return array{batch: SalesImportBatch, rows: int, created: int, skipped: int, fixed: int, errors: list<string>, mapped: array<string, string>}
      */
     public function import(string $path, string $fileName, array $options): array
     {
@@ -119,22 +183,15 @@ class SalesOrderImporter
         ]);
 
         $this->stores = $this->variants = $this->aliases = null;
-        $this->failures = [];
-        $this->fixed = [];
+        $this->failures = $this->fixed = $this->mapped = [];
+        $this->options = $options;
 
         try {
-            [$rows, $errors, $lineCount] = $this->parse($path, $fileName, $options['order_date'] ?? null);
-            $fingerprint = hash_file('sha256', $path);
+            $fingerprint = is_file($path) ? hash_file('sha256', $path) : false;
             if ($fingerprint === false) {
                 throw new BusinessRuleException('File impor tidak dapat dibaca. Unggah ulang file.');
             }
-            foreach ($this->failures as &$failure) {
-                if ($failure['line'] > 0 && blank($failure['values']['NO PESANAN'] ?? null) && blank($failure['values']['ID TRANSAKSI IMPOR'] ?? null)) {
-                    $date = Spreadsheet::parseDate($failure['values']['TANGGAL'] ?? null) ?? '';
-                    $failure['values']['ID TRANSAKSI IMPOR'] = hash('sha256', 'file|'.$fingerprint.'|date|'.$date.'|line|'.$failure['line']);
-                }
-            }
-            unset($failure);
+            [$rows, $errors, $lineCount] = $this->parse($path, $fileName, $fingerprint);
         } catch (BusinessRuleException $exception) {
             [$rows, $errors, $lineCount] = [[], [$exception->getMessage()], 0];
             $fingerprint = '';
@@ -145,40 +202,61 @@ class SalesOrderImporter
     }
 
     /**
-     * @param  array{warehouse_id: int, status: string}  $options
-     * @return array{batch: SalesImportBatch, rows: int, created: int, skipped: int, fixed: int, errors: list<string>}
+     * @param  array{warehouse_id: int, status: ?string}  $options
+     * @return array{batch: SalesImportBatch, rows: int, created: int, skipped: int, fixed: int, errors: list<string>, mapped: array<string, string>}
      */
     public function retryFailure(SalesImportFailure $failure, string $sku, array $options): array
     {
-        return DB::transaction(function () use ($failure, $sku, $options): array {
+        return $this->retry([$failure->id => [...$failure->values, 'SKU VARIAN' => trim($sku)]], $options, 'Perbaikan SKU baris #'.$failure->id);
+    }
+
+    /**
+     * Coba ulang baris gagal (nilai hasil edit langsung, atau nilai lama setelah master data diperbaiki)
+     * dalam 1 batch impor. Baris yang sudah ditangani (bukan "Belum diperbaiki") ditolak.
+     *
+     * @param  array<int, array<string, mixed>>  $values  ID baris gagal => nilai per LABEL HEADER
+     * @param  array{warehouse_id: int, status: ?string}  $options
+     * @return array{batch: SalesImportBatch, rows: int, created: int, skipped: int, fixed: int, errors: list<string>, mapped: array<string, string>}
+     */
+    public function retry(array $values, array $options, ?string $fileName = null): array
+    {
+        return DB::transaction(function () use ($values, $options, $fileName): array {
             DB::select("SELECT pg_advisory_xact_lock(hashtextextended('sales-documents', 0))");
-            $failure = SalesImportFailure::query()->lockForUpdate()->findOrFail($failure->id);
-            if ($failure->status !== ImportFailureStatus::Open || $failure->line < 1) {
-                throw new BusinessRuleException('Baris ini sudah ditangani. Muat ulang daftar impor gagal.');
+            $failures = SalesImportFailure::query()->lockForUpdate()->whereKey(array_keys($values))->orderBy('id')->get();
+
+            if ($failures->count() !== count($values) || $failures->contains(fn (SalesImportFailure $failure): bool => $failure->status !== ImportFailureStatus::Open || $failure->line < 1)) {
+                throw new BusinessRuleException('Baris ini sudah ditangani. Muat ulang daftar Import Perlu Dicek.');
             }
 
             $this->stores = $this->variants = $this->aliases = null;
-            $this->failures = $this->fixed = [];
+            $this->failures = $this->fixed = $this->mapped = [];
+            $this->options = $options;
             $batch = SalesImportBatch::create([
-                'source' => $failure->batch?->source ?? SalesImportSource::Manual,
-                'file_name' => 'Perbaikan SKU baris #'.$failure->id,
+                'source' => $failures->first()->batch?->source ?? SalesImportSource::Manual,
+                'file_name' => $fileName ?? 'Perbaikan '.$failures->count().' baris',
                 'imported_by' => auth()->id(),
             ]);
-            $values = $failure->values;
-            $values['SKU VARIAN'] = trim($sku);
-            // Baris gagal lama yang belum memiliki identitas tetap aman dari percobaan ulang ganda.
-            if (blank($values['ID TRANSAKSI IMPOR'] ?? null) && blank($values['NO PESANAN'] ?? null)) {
-                $values['ID TRANSAKSI IMPOR'] = hash('sha256', 'failure|'.$failure->id);
-            }
-            $input = [];
-            foreach (self::COLUMNS as $label => $key) {
-                $input[$key] = $values[$label] ?? null;
-            }
-            $input['failure_id'] = (string) $failure->id;
+            $rows = [];
             $errors = [];
-            $row = $this->parseRow($input, $failure->line, $errors);
 
-            return $this->completeBatch($batch, $row === null ? [] : [$row], $errors, 1, $options, '');
+            foreach ($failures as $index => $failure) {
+                $row = array_map(fn ($value): string => trim((string) $value), $values[$failure->id]);
+                // Baris gagal lama yang belum memiliki identitas tetap aman dari percobaan ulang ganda.
+                if (blank($row['ID TRANSAKSI IMPOR'] ?? null) && blank($row['NO PESANAN'] ?? null)) {
+                    $row['ID TRANSAKSI IMPOR'] = hash('sha256', 'failure|'.$failure->id);
+                }
+                $input = ['failure_id' => (string) $failure->id];
+                foreach (self::COLUMNS as $label => $key) {
+                    $input[$key] = $row[$label] ?? null;
+                }
+                $parsed = $this->parseRow($input, $failure->line, $errors);
+
+                if ($parsed !== null) {
+                    $rows[] = [...$parsed, 'seq' => $index + 1];
+                }
+            }
+
+            return $this->completeBatch($batch, $rows, $errors, $failures->count(), $options, '');
         });
     }
 
@@ -204,7 +282,7 @@ class SalesOrderImporter
 
         $fixed = $this->saveFailures($batch);
 
-        return ['batch' => $batch, 'rows' => $lineCount, 'created' => $created, 'skipped' => $skipped, 'fixed' => $fixed, 'errors' => $errors];
+        return ['batch' => $batch, 'rows' => $lineCount, 'created' => $created, 'skipped' => $skipped, 'fixed' => $fixed, 'errors' => $errors, 'mapped' => $this->mapped];
     }
 
     /**
@@ -214,30 +292,17 @@ class SalesOrderImporter
      */
     private function saveFailures(SalesImportBatch $batch): int
     {
+        $log = new ImportIssueLog(ImportRegistry::SALES_ORDERS, $batch->file_name);
+
         foreach ($this->failures as $failure) {
-            $batch->failures()->create([
-                'line' => $failure['line'],
-                'values' => $failure['values'],
-                'reason' => $failure['reason'],
-                'message' => $failure['message'],
-                'retry_of_id' => $failure['retry_of'] !== null && SalesImportFailure::query()->whereKey($failure['retry_of'])->exists() ? $failure['retry_of'] : null,
-            ]);
+            $log->fail($failure['line'], $failure['values'], $failure['message'], $failure['reason'], $failure['retry_of']);
         }
 
-        // Baris lama, baris asalnya, dan percobaan ulang lain untuk baris yang sama (mis. file yang sama diimport dua kali).
-        $resolve = fn (array $ids, ImportFailureStatus $status): int => $ids === [] ? 0 : SalesImportFailure::query()
-            ->where(fn ($query) => $query
-                ->whereKey($ids = array_values(array_unique($ids)))
-                ->orWhereIn('retry_of_id', $ids)
-                ->orWhereIn('id', SalesImportFailure::query()->whereKey($ids)->whereNotNull('retry_of_id')->select('retry_of_id')))
-            ->where('batch_id', '!=', $batch->id)
-            ->whereIn('status', [ImportFailureStatus::Open, ImportFailureStatus::Retried])
-            ->update(['status' => $status, 'resolved_batch_id' => $batch->id, 'resolved_at' => now()]);
+        foreach ($this->fixed as $failureId) {
+            $log->fixed($failureId);
+        }
 
-        $fixed = $resolve($this->fixed, ImportFailureStatus::Fixed);
-        $resolve(array_diff(array_filter(array_column($this->failures, 'retry_of')), $this->fixed), ImportFailureStatus::Retried);
-
-        return $fixed;
+        return $log->save($batch->id);
     }
 
     /**
@@ -249,11 +314,129 @@ class SalesOrderImporter
     }
 
     /**
+     * Harga grosir bordir untuk baris ini: berlaku otomatis bila model punya harga grosir dan total qty produk
+     * SKU ini dalam pesanannya (wholesale_qty) mencapai minimal qty-nya (mis. >= 10 / >= 20). Null = harga normal.
+     *
+     * @param  array<string, mixed>  $row
+     */
+    private function wholesalePrice(array $row): ?float
+    {
+        $variant = $this->variants()->firstWhere('id', $row['variant_id']);
+
+        return $variant === null ? null : $this->wholesaleAt($variant, $row['wholesale_qty'] ?? $row['qty'], $row['order_date']);
+    }
+
+    private function wholesaleAt(ProductVariant $variant, int $orderQty, CarbonInterface|string $date): ?float
+    {
+        if ($orderQty < self::WHOLESALE_MIN_QTY || ! $this->billing->hasWholesale($variant)) {
+            return null;
+        }
+
+        return $this->billing->wholesaleFor($variant, $orderQty, $date)['unit_price'] ?? null;
+    }
+
+    /**
+     * Samakan harga grosir semua baris SKU yang sama dalam 1 nomor pesanan dengan total qty SKU itu yang tersimpan
+     * (mis. koreksi lewat file lain, atau baris gagal yang baru diperbaiki).
+     *
+     * @param  array<string, array{0: int, 1: string, 2: int}>  $groups  grup => [store_id, order_no, variant_id]
+     * @param  list<string>  $errors
+     */
+    private function reconcileWholesale(array $groups, array &$errors): void
+    {
+        foreach ($groups as [$storeId, $orderNo, $variantId]) {
+            $items = SalesOrderItem::query()
+                ->where('variant_id', $variantId)
+                ->whereHas('salesOrder', fn ($query) => $query->where('store_id', $storeId)->where('order_no', $orderNo)
+                    ->whereNotNull('import_batch_id')->where('status', '!=', SalesOrderStatus::Cancelled))
+                ->with(['salesOrder', 'variant'])
+                ->orderBy('id')
+                ->get()
+                ->filter(fn (SalesOrderItem $item): bool => $item->variant !== null && $this->billing->hasWholesale($item->variant));
+            $total = (int) $items->sum('qty');
+
+            foreach ($items as $item) {
+                $price = $this->wholesaleAt($item->variant, $total, $item->salesOrder->order_date);
+                $current = $item->is_consignment ? round((float) $item->reseller_unit_price, 2) : null;
+
+                if ($current === ($price === null ? null : round($price, 2))) {
+                    continue;
+                }
+
+                try {
+                    $this->orders->reviseImported($item->salesOrder, $item->qty, $item->revenue === null ? null : (float) $item->revenue, $price);
+                } catch (BusinessRuleException $exception) {
+                    $errors[] = "Pesanan {$orderNo} SKU {$item->variant->sku}: harga grosir tidak bisa disesuaikan. {$exception->getMessage()}";
+                }
+            }
+        }
+    }
+
+    /**
+     * Simpan / koreksi 1 pesanan impor. True = tersimpan atau berubah, false = sudah ada dan sama.
+     *
+     * @param  array<string, mixed>  $row
+     * @param  array{warehouse_id: int, status: ?string}  $options
+     */
+    private function savePart(array $row, SalesImportBatch $batch, array $options): bool
+    {
+        $key = $row['key'];
+        DB::select("SELECT pg_advisory_xact_lock(hashtextextended('sales-documents', 0))");
+        DB::select('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))', ['import:'.$key]);
+        $order = SalesOrder::query()->where('import_key', $key)->lockForUpdate()->first();
+
+        if ($order === null && $row['order_no'] !== '' && SalesOrder::query()->where('store_id', $row['store']->id)->where('order_no', $row['order_no'])->whereNull('import_batch_id')->exists()) {
+            throw new BusinessRuleException('No pesanan sudah digunakan pesanan manual. Koreksi melalui dokumen asal.');
+        }
+
+        if ($order !== null) {
+            if ($order->status === SalesOrderStatus::Cancelled) {
+                throw new BusinessRuleException('Pesanan impor ini sudah dibatalkan. Gunakan nomor pesanan baru bila memang transaksi baru.');
+            }
+            $item = $order->items()->sole();
+            if ($order->store_id !== $row['store']->id || ($row['order_no'] !== '' && $order->order_no !== $row['order_no']) || $item->variant_id !== $row['variant_id'] || $order->order_date->toDateString() !== $row['order_date'] || $order->warehouse_id !== (int) $options['warehouse_id']) {
+                throw new BusinessRuleException('Identitas/gudang pesanan sudah berbeda. Periksa dokumen asal sebelum koreksi.');
+            }
+            $sameRevenue = $item->revenue === null ? $row['revenue'] === null
+                : ($row['revenue'] !== null && round((float) $item->revenue, 2) === round($row['revenue'], 2));
+            $changed = false;
+            if ($item->qty !== $row['qty'] || ! $sameRevenue) {
+                // Qty berubah bisa membuat baris masuk / keluar harga grosir.
+                $this->orders->reviseImported($order, $row['qty'], $row['revenue'], $this->wholesalePrice($row));
+                $changed = true;
+            }
+            // Import ulang dengan status Selesai: pesanan yang masih Diproses (baru dikirim) menjadi Selesai.
+            if (($options['status'] ?? null) === SalesOrderStatus::Completed->value && $order->status === SalesOrderStatus::Pending) {
+                $this->orders->completePending($order);
+                $changed = true;
+            }
+
+            return $changed;
+        }
+
+        $line = ['variant_id' => $row['variant_id'], 'sku_raw' => $row['sku_raw'], 'qty' => $row['qty'], 'revenue' => $row['revenue']];
+
+        // Grosir bordir (QTY >= minimal harga grosir): titipan, harga ke reseller = harga supplier.
+        if (($price = $this->wholesalePrice($row)) !== null) {
+            $line['consignment_price'] = $price;
+        }
+
+        $this->orders->create([
+            'store_id' => $row['store']->id, 'warehouse_id' => $options['warehouse_id'],
+            'order_no' => $row['order_no'] ?: sprintf('IMP%d-%04d', $batch->id, $row['seq'] ?? $row['line']),
+            'order_date' => $row['order_date'], 'status' => ($options['status'] ?? null) ?: SalesOrderStatus::Pending->value,
+            'import_batch_id' => $batch->id, 'import_key' => $key,
+        ], [$line]);
+
+        return true;
+    }
+
+    /**
      * Simpan tiap baris dalam transaksinya sendiri: baris valid tersimpan, baris error dilaporkan.
      * Kesamaan toko, tanggal, SKU, qty, dan pendapatan tidak menandakan transaksi yang sama.
      *
      * @param  list<array{line: int, order_date: string, store: Store, variant_id: int, sku_raw: ?string, qty: int, revenue: ?float, raw: array<string, string>, failure_id: ?int}>  $rows
-     * @param  array{warehouse_id: int, status: string}  $options
+     * @param  array{warehouse_id: int, status: ?string}  $options
      * @param  list<string>  $errors
      * @return array{0: int, 1: int} [tersimpan, dilewati]
      */
@@ -261,58 +444,29 @@ class SalesOrderImporter
     {
         $created = 0;
         $skipped = 0;
-        foreach ($rows as $row) {
-            $key = hash('sha256', $row['order_no'] !== ''
-                ? 'order|'.$row['store']->id.'|'.$row['order_no']
-                : 'file|'.$fingerprint.'|date|'.$row['order_date'].'|line|'.$row['line']);
 
-            if ($row['import_key'] !== '') {
-                $key = $row['import_key'];
+        // Grosir bordir dihitung per SKU per pesanan: total qty SKU yang sama dalam 1 nomor pesanan di file ini.
+        $groups = [];
+        $wholesaleQty = [];
+        foreach ($rows as $row) {
+            if ($row['order_no'] === '') {
+                continue;
             }
+            $group = $row['store']->id.'|'.$row['order_no'].'|'.$row['variant_id'];
+            $groups[$group] = [$row['store']->id, $row['order_no'], $row['variant_id']];
+            $wholesaleQty[$group] = ($wholesaleQty[$group] ?? 0) + $row['qty'];
+        }
+
+        foreach ($rows as $row) {
+            $row['wholesale_qty'] = $row['order_no'] === '' ? $row['qty'] : max($row['qty'], $wholesaleQty[$row['store']->id.'|'.$row['order_no'].'|'.$row['variant_id']] ?? 0);
+            // Biasanya sudah terisi saat parse; baris gagal lama tanpa ID memakai nomor pesanan / posisi baris.
+            $key = $row['import_key'] !== '' ? $row['import_key'] : ($row['order_no'] !== ''
+                ? self::orderKey($row['store']->name, $row['order_no'], $row['sku_raw'], 1)
+                : self::fileKey($fingerprint, $row['order_date'], $row['line']));
             $row['raw']['ID TRANSAKSI IMPOR'] = $key;
 
             try {
-                $saved = DB::transaction(function () use ($row, $batch, $options, $key): bool {
-                    DB::select("SELECT pg_advisory_xact_lock(hashtextextended('sales-documents', 0))");
-                    DB::select('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))', ['import:'.$key]);
-                    $order = SalesOrder::query()->where('import_key', $key)->lockForUpdate()->first();
-
-                    if ($order === null && $row['order_no'] !== '') {
-                        $order = SalesOrder::query()->where('store_id', $row['store']->id)->where('order_no', $row['order_no'])->lockForUpdate()->first();
-                        if ($order !== null && $order->import_batch_id === null) {
-                            throw new BusinessRuleException('No pesanan sudah digunakan pesanan manual. Koreksi melalui dokumen asal.');
-                        }
-                    }
-
-                    if ($order !== null) {
-                        if ($order->status === SalesOrderStatus::Cancelled) {
-                            throw new BusinessRuleException('Pesanan impor ini sudah dibatalkan. Gunakan nomor pesanan baru bila memang transaksi baru.');
-                        }
-                        $item = $order->items()->sole();
-                        if ($order->store_id !== $row['store']->id || ($row['order_no'] !== '' && $order->order_no !== $row['order_no']) || $item->variant_id !== $row['variant_id'] || $order->order_date->toDateString() !== $row['order_date'] || $order->warehouse_id !== (int) $options['warehouse_id']) {
-                            throw new BusinessRuleException('Identitas/gudang pesanan sudah berbeda. Periksa dokumen asal sebelum koreksi.');
-                        }
-                        $sameRevenue = $item->revenue === null ? $row['revenue'] === null
-                            : ($row['revenue'] !== null && round((float) $item->revenue, 2) === round($row['revenue'], 2));
-                        if ($item->qty === $row['qty'] && $sameRevenue) {
-                            return false;
-                        }
-                        $this->orders->reviseImported($order, $row['qty'], $row['revenue']);
-
-                        return true;
-                    }
-
-                    $this->orders->create([
-                        'store_id' => $row['store']->id, 'warehouse_id' => $options['warehouse_id'],
-                        'order_no' => $row['order_no'] ?: sprintf('IMP%d-%04d', $batch->id, $row['line']),
-                        'order_date' => $row['order_date'], 'status' => $options['status'] ?? SalesOrderStatus::Completed->value,
-                        'import_batch_id' => $batch->id, 'import_key' => $key,
-                    ], [[
-                        'variant_id' => $row['variant_id'], 'sku_raw' => $row['sku_raw'], 'qty' => $row['qty'], 'revenue' => $row['revenue'],
-                    ]]);
-
-                    return true;
-                });
+                $saved = DB::transaction(fn (): bool => $this->savePart([...$row, 'key' => $key], $batch, $options));
                 $saved ? $created++ : $skipped++;
                 if ($row['failure_id'] !== null) {
                     $this->fixed[] = $row['failure_id'];
@@ -329,57 +483,86 @@ class SalesOrderImporter
             }
         }
 
+        $this->reconcileWholesale($groups, $errors);
+
         return [$created, $skipped];
     }
 
     /**
      * @return array{0: list<array<string, mixed>>, 1: list<string>, 2: int} [baris valid, error, jumlah baris data]
      */
-    private function parse(string $path, string $fileName, ?string $orderDate): array
+    private function parse(string $path, string $fileName, string $fingerprint): array
     {
         $rows = [];
         $errors = [];
+        $source = SalesImportSource::tryFrom((string) ($this->options['source'] ?? '')) ?? SalesImportSource::Manual;
 
-        // Format manual (template) dicoba dulu, lalu format export BigSeller "Analisa Bisnis SKU Toko".
+        // File baris gagal dicoba dulu (bisa dari sumber mana pun), lalu format sesuai Sumber Data.
         $sheets = Spreadsheet::readSheets($path, $fileName, [
-            'manual' => [
+            'failures' => [
                 'headers' => [
                     ...self::COLUMNS,
                     'SKU BIGSELLER' => 'sku_bigseller',
                     'NO. PESANAN' => 'order_no',
                     self::FAILURE_ID_COLUMN => 'failure_id',
                 ],
-                'required' => ['order_date', 'store', 'qty', ['sku', 'sku_bigseller']],
+                'required' => ['failure_id', 'store', 'qty', ['sku', 'sku_bigseller']],
             ],
-            'bigseller' => [
-                'headers' => self::BIGSELLER_COLUMNS,
-                'required' => ['store', 'sku_bigseller', 'qty'],
-            ],
+            $source->value => match ($source) {
+                SalesImportSource::BigSeller => ['headers' => self::BIGSELLER_COLUMNS, 'required' => ['order_no', 'store', 'sku_bigseller', 'qty']],
+                SalesImportSource::Website => ['headers' => self::WEBSITE_COLUMNS, 'required' => ['order_date', 'store', 'order_no', 'qty', ['sku', 'sku_bigseller']]],
+                default => ['headers' => self::MANUAL_COLUMNS, 'required' => ['order_date', 'store', 'qty', ['sku', 'sku_bigseller']]],
+            },
         ], firstSheetOnly: true);
 
         $lines = reset($sheets);
 
         if ($lines === false) {
-            throw new BusinessRuleException('Header tidak ditemukan. Gunakan template (kolom TANGGAL, NAMA TOKO, SKU VARIAN / SKU BIG SELLER, QTY) atau file export BigSeller (Nama Toko, Nomor SKU Toko, Penjualan Produk Valid, Dana Penjualan Produk Valid).');
+            throw new BusinessRuleException('Header tidak sesuai format '.$source->getLabel().'. '.$source->formatHint());
         }
 
-        if (array_key_first($sheets) === 'bigseller') {
-            // Export BigSeller berisi semua SKU toko; SKU tanpa penjualan (qty 0) bukan pesanan.
-            $lines = array_values(array_filter($lines, fn (array $line): bool => Spreadsheet::parseNumber($line['values']['qty'] ?? null) != 0));
-        }
+        /** @var array<string, int> $occurrences toko + nomor pesanan + SKU => urutan baris SKU yang sama dalam pesanan */
+        $occurrences = [];
 
         foreach ($lines as $line) {
-            if (($line['values']['order_date'] ?? null) === null || $line['values']['order_date'] === '') {
-                $line['values']['order_date'] = $orderDate;
+            $values = $line['values'];
+            if (blank($values['order_date'] ?? null)) {
+                $values['order_date'] = $this->options['order_date'] ?? null;
             }
 
-            $parsed = $this->parseRow($line['values'], $line['line'], $errors);
+            // Identitas baris: nomor pesanan + SKU (+ urutan bila SKU sama muncul lagi di pesanan yang sama),
+            // atau sidik file + posisi baris untuk file tanpa nomor pesanan.
+            if (blank($values['import_key'] ?? null)) {
+                $store = Spreadsheet::text($values['store'] ?? null);
+                $orderNo = Spreadsheet::text($values['order_no'] ?? null);
+                $skuRaw = Spreadsheet::text($values['sku_bigseller'] ?? null) ?: Spreadsheet::text($values['sku'] ?? null);
+
+                if ($orderNo !== '') {
+                    $group = Str::lower(trim($store)).'|'.$orderNo.'|'.Str::lower($skuRaw);
+                    $occurrences[$group] = ($occurrences[$group] ?? 0) + 1;
+                    $values['import_key'] = self::orderKey($store, $orderNo, $skuRaw, $occurrences[$group]);
+                } else {
+                    $values['import_key'] = self::fileKey($fingerprint, Spreadsheet::parseDate($values['order_date'] ?? null) ?? '', $line['line']);
+                }
+            }
+
+            $parsed = $this->parseRow($values, $line['line'], $errors);
             if ($parsed !== null) {
                 $rows[] = $parsed;
             }
         }
 
         return [$rows, $errors, count($lines)];
+    }
+
+    private static function orderKey(string $store, string $orderNo, ?string $skuRaw, int $occurrence): string
+    {
+        return hash('sha256', 'order|'.Str::lower(trim($store)).'|'.$orderNo.'|'.Str::lower(trim((string) $skuRaw)).'|'.$occurrence);
+    }
+
+    private static function fileKey(string $fingerprint, string $date, int $line): string
+    {
+        return hash('sha256', 'file|'.$fingerprint.'|date|'.$date.'|line|'.$line);
     }
 
     /**
@@ -417,9 +600,9 @@ class SalesOrderImporter
             $rowErrors["toko \"{$storeName}\" tidak aktif"] = ImportFailureReason::StoreInactive;
         }
 
-        $sku = (string) ($input['sku'] ?? '');
-        $skuBigSeller = (string) ($input['sku_bigseller'] ?? '');
-        $variant = $this->resolveVariant($sku, $skuBigSeller);
+        $sku = Spreadsheet::text($input['sku'] ?? null);
+        $skuBigSeller = Spreadsheet::text($input['sku_bigseller'] ?? null);
+        $variant = $this->resolveVariant($sku, $skuBigSeller, Spreadsheet::text($input['product_name'] ?? null), Spreadsheet::text($input['variation_name'] ?? null));
         if ($sku === '' && $skuBigSeller === '') {
             $rowErrors['SKU VARIAN / SKU BIG SELLER kosong'] = ImportFailureReason::SkuNotFound;
         } elseif ($variant === null) {
@@ -463,21 +646,52 @@ class SalesOrderImporter
         ];
     }
 
-    private function resolveVariant(string $sku, string $skuBigSeller): ?ProductVariant
+    /**
+     * SKU VARIAN = SKU sistem. SKU marketplace / website: pemetaan SKU atau SKU sistem, juga tanpa keterangan
+     * dalam kurung ("BC22-Hitam-2XL (LD 118 cm)"); bila belum dikenal dan opsi auto_map aktif, penalaran SKU +
+     * nama produk + nama variasi yang cukup yakin langsung disimpan sebagai pemetaan SKU baru.
+     */
+    private function resolveVariant(string $sku, string $skuRaw, string $productName = '', string $variation = ''): ?ProductVariant
     {
         if ($sku !== '') {
             return $this->variants()->get(Str::lower($sku));
         }
 
-        if ($skuBigSeller === '') {
+        if ($skuRaw === '') {
             return null;
         }
 
-        $variantId = $this->aliases()->get(Str::lower($skuBigSeller));
+        foreach (array_unique([$skuRaw, SkuMatcher::cleanSku($skuRaw)]) as $candidate) {
+            $variantId = $this->aliases()->get(Str::lower($candidate));
+            $variant = $variantId !== null
+                ? $this->variants()->firstWhere('id', $variantId)
+                : $this->variants()->get(Str::lower($candidate));
 
-        return $variantId !== null
-            ? $this->variants()->firstWhere('id', $variantId)
-            : $this->variants()->get(Str::lower($skuBigSeller));
+            if ($variant !== null) {
+                return $variant;
+            }
+        }
+
+        if (! ($this->options['auto_map'] ?? false) || ($productName === '' && $variation === '')) {
+            return null;
+        }
+
+        $best = $this->matcher->best($skuRaw, $productName, SkuMatcher::AUTO_MAP, $variation);
+        if ($best === null) {
+            return null;
+        }
+
+        $source = SalesImportSource::tryFrom((string) ($this->options['source'] ?? '')) ?? SalesImportSource::Manual;
+        try {
+            $this->mapping->map($skuRaw, $best['variant'], SkuAlias::sourceFor($source));
+        } catch (BusinessRuleException) {
+            return null;
+        }
+
+        $this->aliases()->put(Str::lower($skuRaw), $best['variant']->id);
+        $this->mapped[$skuRaw] = $best['variant']->sku;
+
+        return $this->variants()->firstWhere('id', $best['variant']->id);
     }
 
     /** @return Collection<string, Store> */

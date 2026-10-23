@@ -60,6 +60,19 @@ class WorkOrderForm
                                 TextInput::make('phone')
                                     ->label('Telepon'),
                             ]),
+                        Select::make('cutter_id')
+                            ->label('Tukang Potong')
+                            ->helperText('Boleh dikosongkan; dicatat otomatis saat upah potong dibayar.')
+                            ->relationship('cutter', 'name', fn (Builder $query) => $query->where('is_active', true))
+                            ->searchable()
+                            ->preload()
+                            ->createOptionForm([
+                                TextInput::make('name')
+                                    ->label('Nama')
+                                    ->required(),
+                                TextInput::make('phone')
+                                    ->label('Telepon'),
+                            ]),
                         Textarea::make('note')
                             ->label('Catatan')
                             ->columnSpanFull(),

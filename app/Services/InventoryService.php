@@ -64,6 +64,9 @@ class InventoryService
                     $item->variant_id, $receipt->warehouse_id, $item->qty, StockMovementType::GoodsIn,
                     $item, $item->unit_cost, movedAt: $receipt->received_at,
                 );
+
+                // Beli jadi: 1 baris = 1 lot FIFO untuk tagihan supplier.
+                app(SupplierBilling::class)->receive($item->setRelation('receipt', $receipt));
             }
 
             return $receipt;

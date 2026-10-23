@@ -13,6 +13,7 @@ use App\Models\ProductVariant;
 use App\Models\ResellerPriceHistory;
 use App\Models\Setting;
 use App\Models\VariantCost;
+use App\Models\VariantPackingCost;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -21,7 +22,7 @@ use Illuminate\Support\Facades\DB;
  * Harga reseller: harga dasar berlaku x (1 + % tier pemilik), plus HPP berlaku.
  * Harga dasar dibuat OTOMATIS, tidak diisi manual:
  *  - produksi : HPP resep x (1 + margin);
- *  - beli jadi: (harga beli + packing) x (1 + margin beli jadi %) + margin beli jadi nominal.
+ *  - beli jadi: (harga beli + packing) x (1 + margin beli jadi %, default 5%).
  */
 class PricingService
 {
@@ -78,22 +79,13 @@ class PricingService
     }
 
     /**
-     * Margin nominal (Rp per pcs) di atas margin %: hanya beli jadi (pengaturan margin_ready_made_amount, default 2000).
+     * Harga dasar = HPP x (1 + margin), dibulatkan ke atas sesuai pengaturan price_rounding (sama dengan v_variant_pricing).
      */
-    public function marginAmountFor(ProductVariant $variant): float
-    {
-        return $variant->isReadyMade() ? (float) Setting::valueOf('margin_ready_made_amount', 2000) : 0.0;
-    }
-
-    /**
-     * Harga dasar = HPP x (1 + margin) + margin nominal, dibulatkan ke atas sesuai pengaturan price_rounding
-     * (sama dengan v_variant_pricing).
-     */
-    public function basePriceFor(float $totalCost, float $margin, float $marginAmount = 0.0): float
+    public function basePriceFor(float $totalCost, float $margin): float
     {
         $rounding = (float) Setting::valueOf('price_rounding', 100) ?: 100;
 
-        return ceil(round(($totalCost * (1 + $margin) + $marginAmount) / $rounding, 6)) * $rounding;
+        return ceil(round($totalCost * (1 + $margin) / $rounding, 6)) * $rounding;
     }
 
     /**
@@ -107,8 +99,7 @@ class PricingService
         $date = Carbon::parse($date)->toDateString();
         $cost = $this->costing->refreshVariantCost($variant, $date)->refresh();
         $margin = $this->marginFor($variant);
-        $marginAmount = $this->marginAmountFor($variant);
-        $basePrice = $this->basePriceFor((float) $cost->total_cost, $margin, $marginAmount);
+        $basePrice = $this->basePriceFor((float) $cost->total_cost, $margin);
 
         $price = $variant->priceHistories()->whereDate('effective_from', $date)->first();
 
@@ -134,10 +125,77 @@ class PricingService
                 'source' => PriceSource::Auto,
                 'approved_by' => auth()->id(),
                 'note' => $variant->isReadyMade()
-                    ? 'Otomatis dari harga beli + packing + margin '.round($margin * 100, 2).'% + Rp'.number_format($marginAmount, 0, ',', '.')
+                    ? 'Otomatis dari harga beli + packing + margin '.round($margin * 100, 2).'%'
                     : 'Otomatis dari resep + margin',
             ],
         );
+    }
+
+    /**
+     * UBAH HARGA dengan tanggal berlaku mulai $date: margin khusus & biaya packing; harga dasar dihitung otomatis
+     * (HPP dari BOM / harga beli + packing, x margin). Khusus BELI JADI harga dasar boleh diisi manual ($manualPrice).
+     * Produksi tidak bisa harga manual: HPP & harga hanya dari resep (BOM).
+     * Pesanan lama tidak berubah karena harga disimpan per pesanan (snapshot); pesanan bertanggal >= $date memakai harga baru.
+     * Harga manual berlaku sampai harga beli berubah lagi (Barang Masuk baru membuat harga otomatis baru).
+     *
+     * @param  array{margin_pct?: ?float, packing_cost?: ?float}  $attributes
+     *
+     * @throws BusinessRuleException harga di tanggal itu sudah dipakai pesanan, harga manual untuk produk produksi,
+     *                               atau HPP/harga belum bisa dihitung
+     */
+    public function changePrice(ProductVariant $variant, array $attributes, CarbonInterface|string $date, ?float $manualPrice = null, ?string $note = null): ResellerPriceHistory
+    {
+        $date = Carbon::parse($date)->toDateString();
+
+        if ($manualPrice !== null && ! $variant->isReadyMade()) {
+            throw new BusinessRuleException('Harga produk produksi hanya dihitung dari resep (BOM); ubah margin atau packing.');
+        }
+
+        return DB::transaction(function () use ($variant, $attributes, $date, $manualPrice, $note): ResellerPriceHistory {
+            if (array_key_exists('margin_pct', $attributes)) {
+                $variant->fill(['margin_pct' => $attributes['margin_pct']]);
+            }
+
+            if ($variant->isDirty()) {
+                $variant->save();
+            }
+
+            // Packing bertanggal: berlaku mulai $date (NULL = kembali ke default pengaturan).
+            if (array_key_exists('packing_cost', $attributes)) {
+                $current = $this->costing->packingCostFor($variant, $date);
+                $target = $attributes['packing_cost'] ?? $this->costing->defaultPackingFor($variant);
+
+                if (round($current, 2) !== round((float) $target, 2)) {
+                    VariantPackingCost::updateOrCreate(
+                        ['variant_id' => $variant->id, 'effective_from' => $date],
+                        ['amount' => $attributes['packing_cost'], 'created_by' => auth()->id()],
+                    );
+                }
+            }
+
+            if ($manualPrice === null) {
+                return $this->syncPrice($variant, $date);
+            }
+
+            $cost = $this->costing->refreshVariantCost($variant, $date)->refresh();
+            $price = $variant->priceHistories()->whereDate('effective_from', $date)->first();
+
+            if ($price !== null && (float) $price->base_price !== $manualPrice && $price->salesOrderItems()->exists()) {
+                throw new BusinessRuleException("harga tanggal {$date} sudah dipakai pesanan; pilih tanggal berlaku lain");
+            }
+
+            return ResellerPriceHistory::updateOrCreate(
+                ['variant_id' => $variant->id, 'effective_from' => $date],
+                [
+                    'base_price' => $manualPrice,
+                    'variant_cost_id' => $cost->id,
+                    'margin_pct' => (float) $cost->total_cost > 0 ? round($manualPrice / (float) $cost->total_cost - 1, 4) : null,
+                    'source' => PriceSource::Manual,
+                    'approved_by' => auth()->id(),
+                    'note' => $note ?: 'Harga manual',
+                ],
+            );
+        });
     }
 
     /**

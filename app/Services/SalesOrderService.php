@@ -22,11 +22,13 @@ class SalesOrderService
     public function __construct(
         private StockLedger $ledger,
         private PricingService $pricing,
+        private SupplierBilling $supplierBilling,
     ) {}
 
     /**
      * @param  array<string, mixed>  $data
-     * @param  list<array<string, mixed>>  $items  variant_id, qty, revenue, sku_raw
+     * @param  list<array<string, mixed>>  $items  variant_id, qty, revenue, sku_raw;
+     *                                             consignment_price = titipan grosir bordir (harga ke reseller = harga supplier, tanpa laba)
      */
     public function create(array $data, array $items): SalesOrder
     {
@@ -51,11 +53,18 @@ class SalesOrderService
                     throw new BusinessRuleException('SKU tidak ditemukan atau tidak aktif.');
                 }
                 $snapshot = $this->pricing->snapshot((int) $row['variant_id'], $ownerId, $order->order_date);
+
+                if (isset($row['consignment_price'])) {
+                    // Titipan: reseller membayar persis harga supplier; HPP = harga itu (laba konveksi 0).
+                    $snapshot = [...$snapshot, 'tier_adjustment_pct' => 0, 'reseller_unit_price' => (float) $row['consignment_price'], 'hpp_unit' => (float) $row['consignment_price']];
+                }
+
                 $item = $order->items()->create([
                     'variant_id' => $row['variant_id'],
                     'sku_raw' => $row['sku_raw'] ?? null,
                     'qty' => $row['qty'],
                     'revenue' => $row['revenue'] ?? null,
+                    'is_consignment' => isset($row['consignment_price']),
                     ...$snapshot,
                 ]);
 
@@ -65,6 +74,8 @@ class SalesOrderService
                         $item, $item->hpp_unit, movedAt: $order->order_date,
                     );
                 }
+
+                $this->supplierBilling->bill($item);
             }
 
             return $order;
@@ -101,6 +112,7 @@ class SalesOrderService
                     $item, $item->hpp_unit,
                 );
                 $item->update(['reseller_invoice_id' => null]);
+                $this->supplierBilling->reverse($item);
             }
 
             $order->update(['status' => SalesOrderStatus::Cancelled]);
@@ -116,13 +128,18 @@ class SalesOrderService
                 throw new BusinessRuleException('Status pesanan sudah berubah. Muat ulang halaman.');
             }
             $locked->update(['status' => SalesOrderStatus::Completed]);
+            $locked->items()->get()->each(fn (SalesOrderItem $item) => $this->supplierBilling->bill($item));
         });
         $order->refresh();
     }
 
-    public function reviseImported(SalesOrder $order, int $qty, ?float $revenue): void
+    /**
+     * Koreksi qty/pendapatan pesanan impor. $consignmentPrice = harga grosir bordir bila qty baru masuk grosir
+     * (null = harga normal); harga ikut berubah bila status grosir/harganya berubah.
+     */
+    public function reviseImported(SalesOrder $order, int $qty, ?float $revenue, ?float $consignmentPrice = null): void
     {
-        DB::transaction(function () use ($order, $qty, $revenue): void {
+        DB::transaction(function () use ($order, $qty, $revenue, $consignmentPrice): void {
             DB::select("SELECT pg_advisory_xact_lock(hashtextextended('sales-documents', 0))");
             $order = SalesOrder::query()->lockForUpdate()->findOrFail($order->id);
             $item = $order->items()->lockForUpdate()->sole();
@@ -134,6 +151,19 @@ class SalesOrderService
                 $this->ledger->moveStock($item->variant_id, $order->warehouse_id, -$delta, StockMovementType::Adjustment, $item, $item->hpp_unit, 'Koreksi jumlah impor', $order->order_date);
             }
             $item->update(['qty' => $qty, 'revenue' => $revenue]);
+
+            $repriced = $item->is_consignment !== ($consignmentPrice !== null)
+                || ($consignmentPrice !== null && round((float) $item->reseller_unit_price, 2) !== round($consignmentPrice, 2));
+
+            if ($repriced) {
+                $order->loadMissing('store.reseller');
+                $snapshot = $this->pricing->snapshot($item->variant_id, $order->store->reseller->owner_id, $order->order_date);
+                $item->update($consignmentPrice === null
+                    ? [...$snapshot, 'is_consignment' => false]
+                    : [...$snapshot, 'tier_adjustment_pct' => 0, 'reseller_unit_price' => $consignmentPrice, 'hpp_unit' => $consignmentPrice, 'is_consignment' => true]);
+            }
+
+            $this->supplierBilling->rebill($item);
         });
     }
 
@@ -185,6 +215,8 @@ class SalesOrderService
                     $return, $item->hpp_unit, movedAt: $return->returned_at,
                 );
             }
+
+            $this->supplierBilling->returned($return);
 
             $fullyReturned = $order->items()->get()->every(fn (SalesOrderItem $line): bool => $this->returnableQty($line) === 0);
 

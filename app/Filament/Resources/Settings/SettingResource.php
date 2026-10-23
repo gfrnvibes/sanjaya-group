@@ -43,8 +43,8 @@ class SettingResource extends Resource
         return [
             'margin_default' => 'Margin default usulan harga (0.30 = 30%)',
             'margin_ready_made_pct' => 'Margin % default produk beli jadi (0.05 = 5%)',
-            'margin_ready_made_amount' => 'Margin nominal produk beli jadi, Rp per pcs (mis. 2000)',
             'packing_cost_default' => 'Biaya packing default produk beli jadi, Rp per pcs (bisa diubah per varian)',
+            'packing_cost_default_production' => 'Biaya packing default produk produksi, Rp per pcs (bisa diubah per varian, dengan tanggal berlaku)',
             'price_rounding' => 'Pembulatan usulan harga dasar (mis. 500)',
             'tier_price_rounding' => 'Pembulatan harga reseller setelah tier (mis. 100)',
             'price_tolerance_pct' => 'Toleransi selisih harga sebelum diusulkan (0.02 = 2%)',

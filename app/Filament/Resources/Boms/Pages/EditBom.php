@@ -3,6 +3,7 @@
 namespace App\Filament\Resources\Boms\Pages;
 
 use App\Filament\Resources\Boms\BomResource;
+use App\Filament\Support\BomWageWarning;
 use App\Filament\Support\PriceSyncNotification;
 use App\Services\PricingService;
 use Filament\Actions\DeleteAction;
@@ -27,5 +28,6 @@ class EditBom extends EditRecord
     protected function afterSave(): void
     {
         PriceSyncNotification::send(app(PricingService::class)->syncForBom($this->getRecord()));
+        BomWageWarning::send($this->getRecord()->refresh());
     }
 }

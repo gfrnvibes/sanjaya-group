@@ -6,7 +6,9 @@ use App\Enums\BomColorMode;
 use App\Enums\BomLineType;
 use App\Enums\GoodsReceiptSource;
 use App\Enums\MaterialMovementType;
+use App\Enums\ProductKind;
 use App\Enums\VariantCostSource;
+use App\Enums\WageType;
 use App\Exceptions\BusinessRuleException;
 use App\Models\Bom;
 use App\Models\BomItem;
@@ -22,18 +24,26 @@ use Illuminate\Support\Carbon;
 
 /**
  * HPP varian:
- *  - PRODUKSI: resep (BOM) x harga beli bahan terakhir + ongkos;
+ *  - PRODUKSI: resep (BOM) x harga beli bahan terakhir + ongkos + packing;
  *  - BELI JADI: harga beli terakhir (Barang Masuk sumber Beli Jadi) + biaya packing.
  */
 class CostingService
 {
+    /**
+     * Kode bawaan jenis ongkos upah jahit / potong (dipakai migrasi data lama). Perhitungan upah memakai
+     * "Dibayar sebagai" (labor_types.wage_type), bukan kode.
+     */
+    public const SEWING_LABOR_CODE = 'JAHIT';
+
+    public const CUTTING_LABOR_CODE = 'POTONG';
+
     /**
      * Resep berlaku untuk varian pada tanggal tertentu; resep khusus ukuran didahulukan.
      */
     public function bomFor(ProductVariant $variant, CarbonInterface|string $date): ?Bom
     {
         return Bom::query()
-            ->with(['items.material', 'items.materialType'])
+            ->with(['items.material', 'items.materialType', 'items.laborType'])
             ->where('model_id', $variant->model_id)
             ->whereDate('effective_from', '<=', $date)
             ->where(fn ($query) => $query->whereNull('size_id')->orWhere('size_id', $variant->size_id))
@@ -52,6 +62,32 @@ class CostingService
             ->where('material_type_id', $item->material_type_id)
             ->where('color_id', $variant->color_id)
             ->first();
+    }
+
+    /**
+     * Peringatan resep model PRODUKSI tanpa ongkos yang dibayar sebagai upah jahit / upah potong
+     * (upah SPK model itu akan Rp0). Kosong = resep lengkap.
+     *
+     * @return list<string>
+     */
+    public function wageWarnings(Bom $bom): array
+    {
+        $bom->loadMissing(['model', 'items.laborType']);
+
+        if ($bom->model?->kind !== ProductKind::Produksi) {
+            return [];
+        }
+
+        $paid = $bom->items->map(fn (BomItem $item): ?WageType => $item->line_type === BomLineType::Labor ? $item->laborType?->wage_type : null)->filter();
+        $warnings = [];
+
+        foreach (WageType::cases() as $type) {
+            if (! $paid->contains($type)) {
+                $warnings[] = "Resep {$bom->model->code} belum punya ongkos yang dibayar sebagai {$type->getLabel()}: {$type->getLabel()} SPK model ini akan Rp0.";
+            }
+        }
+
+        return $warnings;
     }
 
     /**
@@ -83,7 +119,7 @@ class CostingService
     }
 
     /**
-     * @return array{material_cost: float, labor_cost: float, materials: list<array{material: Material, qty_per_unit: float, unit_cost: float}>}
+     * @return array{material_cost: float, labor_cost: float, sewing_cost: float, cutting_cost: float, materials: list<array{material: Material, qty_per_unit: float, unit_cost: float}>}
      */
     public function calculate(ProductVariant $variant, CarbonInterface|string $date): array
     {
@@ -94,12 +130,23 @@ class CostingService
         }
 
         $materialCost = 0.0;
+        $sewingCost = 0.0;
+        $cuttingCost = 0.0;
         $laborCost = 0.0;
         $materials = [];
 
         foreach ($bom->items as $item) {
             if ($item->line_type === BomLineType::Labor) {
                 $laborCost += (float) $item->labor_rate * (float) $item->qty_per_unit;
+
+                // Upah SPK menurut "Dibayar sebagai" di Jenis Ongkos Kerja (bukan kode).
+                if ($item->laborType?->wage_type === WageType::Jahit) {
+                    $sewingCost += (float) $item->labor_rate * (float) $item->qty_per_unit;
+                }
+
+                if ($item->laborType?->wage_type === WageType::Potong) {
+                    $cuttingCost += (float) $item->labor_rate * (float) $item->qty_per_unit;
+                }
 
                 continue;
             }
@@ -118,6 +165,8 @@ class CostingService
         return [
             'material_cost' => round($materialCost, 2),
             'labor_cost' => round($laborCost, 2),
+            'sewing_cost' => round($sewingCost, 2),
+            'cutting_cost' => round($cuttingCost, 2),
             'materials' => $materials,
         ];
     }
@@ -146,11 +195,32 @@ class CostingService
     }
 
     /**
-     * Biaya packing per pcs: isian varian, atau pengaturan packing_cost_default.
+     * Biaya packing per pcs pada tanggal: riwayat packing varian (berlaku mulai) > isian varian > pengaturan default
+     * (packing_cost_default Rp3.000 untuk beli jadi, packing_cost_default_production untuk produksi, default 0).
      */
-    public function packingCostFor(ProductVariant $variant): float
+    public function packingCostFor(ProductVariant $variant, CarbonInterface|string|null $date = null): float
     {
-        return (float) ($variant->packing_cost ?? Setting::valueOf('packing_cost_default', 0));
+        $history = $variant->packingCosts()
+            ->whereDate('effective_from', '<=', Carbon::parse($date ?? today())->toDateString())
+            ->orderByDesc('effective_from')
+            ->first();
+
+        if ($history !== null && $history->amount !== null) {
+            return (float) $history->amount;
+        }
+
+        if ($history === null && $variant->packing_cost !== null) {
+            return (float) $variant->packing_cost;
+        }
+
+        return $this->defaultPackingFor($variant);
+    }
+
+    public function defaultPackingFor(ProductVariant $variant): float
+    {
+        return (float) ($variant->isReadyMade()
+            ? Setting::valueOf('packing_cost_default', 3000)
+            : Setting::valueOf('packing_cost_default_production', 0));
     }
 
     /**
@@ -178,15 +248,17 @@ class CostingService
 
             return VariantCost::updateOrCreate(
                 ['variant_id' => $variant->id, 'effective_from' => $date],
-                ['material_cost' => round($purchase['unit_cost'], 2), 'labor_cost' => round($this->packingCostFor($variant), 2), 'source' => VariantCostSource::Purchase],
+                ['material_cost' => round($purchase['unit_cost'], 2), 'labor_cost' => $packing = round($this->packingCostFor($variant, $date), 2), 'packing_cost' => $packing, 'source' => VariantCostSource::Purchase],
             );
         }
 
         $cost = $this->calculate($variant, $date);
+        $packing = round($this->packingCostFor($variant, $date), 2);
 
+        // Produksi: HPP = bahan + ongkos resep + packing (packing ikut labor_cost, dicatat terpisah di packing_cost).
         return VariantCost::updateOrCreate(
             ['variant_id' => $variant->id, 'effective_from' => $date],
-            ['material_cost' => $cost['material_cost'], 'labor_cost' => $cost['labor_cost'], 'source' => VariantCostSource::Bom],
+            ['material_cost' => $cost['material_cost'], 'labor_cost' => round($cost['labor_cost'] + $packing, 2), 'packing_cost' => $packing, 'source' => VariantCostSource::Bom],
         );
     }
 }

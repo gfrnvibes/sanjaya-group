@@ -27,4 +27,28 @@ class Supplier extends Model
     {
         return $this->hasMany(GoodsReceipt::class);
     }
+
+    /** @return HasMany<SupplierBillLine, $this> */
+    public function billLines(): HasMany
+    {
+        return $this->hasMany(SupplierBillLine::class);
+    }
+
+    /** @return HasMany<SupplierPayment, $this> */
+    public function payments(): HasMany
+    {
+        return $this->hasMany(SupplierPayment::class);
+    }
+
+    /** @return HasMany<SupplierWholesalePrice, $this> */
+    public function wholesalePrices(): HasMany
+    {
+        return $this->hasMany(SupplierWholesalePrice::class);
+    }
+
+    /** @return HasMany<StockLot, $this> */
+    public function lots(): HasMany
+    {
+        return $this->hasMany(StockLot::class);
+    }
 }

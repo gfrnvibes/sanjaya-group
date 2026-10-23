@@ -5,6 +5,7 @@ namespace App\Providers\Filament;
 use App\Filament\Pages\SalesDashboard;
 use App\Http\Controllers\DownloadPaymentProof;
 use App\Http\Controllers\DownloadSalesImportFailures;
+use App\Http\Controllers\ShowPrintedTable;
 use Filament\Http\Middleware\Authenticate;
 use Filament\Http\Middleware\AuthenticateSession;
 use Filament\Http\Middleware\DisableBladeIconComponents;
@@ -41,6 +42,8 @@ class AdministratorPanelProvider extends PanelProvider
                 'primary' => Color::Amber,
             ])
             ->sidebarCollapsibleOnDesktop()
+            ->databaseNotifications() // lonceng: baris import yang perlu dicek
+            ->databaseNotificationsPolling('60s')
             ->navigationGroups([
                 NavigationGroup::make('Penjualan'),
                 NavigationGroup::make('Keuangan'),
@@ -55,6 +58,7 @@ class AdministratorPanelProvider extends PanelProvider
             ->authenticatedRoutes(function (): void {
                 Route::get('payment-proofs/{payment}', DownloadPaymentProof::class)->name('payment-proofs.download');
                 Route::get('import-gagal/unduh', DownloadSalesImportFailures::class)->name('sales-import-failures.download');
+                Route::get('cetak/{token}', ShowPrintedTable::class)->whereUuid('token')->name('print');
             })
             ->discoverResources(in: app_path('Filament/Resources'), for: 'App\Filament\Resources')
             ->discoverPages(in: app_path('Filament/Pages'), for: 'App\Filament\Pages')

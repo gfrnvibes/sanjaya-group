@@ -102,8 +102,18 @@ it('recognizes the original file after a direct correction when its missing alia
     }
 });
 
-it('denies inventory-only staff access to the failed sales correction page', function () {
+it('shows inventory-only staff only their own import categories, never failed sales rows', function () {
+    $f = businessFixture();
+    [$failure] = missingSkuFailure($f);
     $user = User::factory()->create(['is_active' => true]);
     $user->givePermissionTo(Permission::findOrCreate('kelola stok', 'web'));
-    $this->actingAs($user)->get('/administrator/import-gagal')->assertForbidden();
+    $this->actingAs($user)->get('/administrator/import-perlu-dicek')->assertOk();
+
+    Livewire::test(ListSalesImportFailures::class)->assertCanNotSeeTableRecords([$failure]);
+});
+
+it('denies the import review page to staff without any import permission', function () {
+    $user = User::factory()->create(['is_active' => true]);
+    $user->givePermissionTo(Permission::findOrCreate('lihat laporan', 'web'));
+    $this->actingAs($user)->get('/administrator/import-perlu-dicek')->assertForbidden();
 });

@@ -31,7 +31,7 @@ class TailorResource extends Resource
 
     protected static ?string $modelLabel = 'Penjahit';
 
-    protected static ?string $pluralModelLabel = 'Penjahit';
+    protected static ?string $pluralModelLabel = 'Penjahit & Tukang Potong';
 
     protected static ?string $recordTitleAttribute = 'name';
 

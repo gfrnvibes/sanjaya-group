@@ -36,4 +36,10 @@ class CashAccount extends Model
     {
         return $this->hasMany(Expense::class);
     }
+
+    /** @return HasMany<SupplierPayment, $this> */
+    public function supplierPayments(): HasMany
+    {
+        return $this->hasMany(SupplierPayment::class);
+    }
 }

@@ -8,6 +8,7 @@ use App\Models\CashAccount;
 use App\Models\ExpenseCategory;
 use App\Models\ProductVariant;
 use App\Models\Reseller;
+use App\Models\SalesImportFailure;
 use App\Models\SkuAlias;
 use App\Models\Store;
 use App\Models\Supplier;
@@ -54,6 +55,9 @@ abstract class RowImporter
 
     /** @var array<string, int> sisa data yang sudah ada per sidik (untuk melewati baris dobel) */
     private array $existingLeft = [];
+
+    /** Baris gagal unggahan yang sedang diproses (masuk ke "Import Perlu Dicek"). */
+    private ImportIssueLog $issues;
 
     /**
      * Nama data, dipakai untuk judul sheet, nama file, dan label ringkasan (mis. "Biaya Iklan").
@@ -120,16 +124,13 @@ abstract class RowImporter
      */
     public function import(string $path, string $fileName): array
     {
-        $this->stats = [];
-        $this->errors = [];
-        $this->warnings = [];
-        $this->existingLeft = [];
+        $this->issues = new ImportIssueLog($this->key(), $fileName);
 
         try {
             $lines = Spreadsheet::read(
                 $path,
                 $fileName,
-                collect($this->columns())->map(fn (array $column): string => $column[0])->all(),
+                [...collect($this->columns())->map(fn (array $column): string => $column[0])->all(), ImportIssueLog::FAILURE_ID_COLUMN => 'failure_id'],
                 $this->requiredHeaders(),
                 'Header tidak ditemukan. Pastikan ada kolom '.implode(', ', $this->requiredLabels()).' (gunakan template).',
             );
@@ -141,10 +142,54 @@ abstract class RowImporter
             return ['rows' => 0, 'stats' => [], 'errors' => ['Tidak ada baris data yang bisa diimpor.'], 'warnings' => []];
         }
 
+        return $this->process($lines);
+    }
+
+    /**
+     * Coba ulang baris dari "Import Perlu Dicek" (nilai per LABEL HEADER, mis. hasil edit langsung).
+     *
+     * @param  list<array{line: int, values: array<string, mixed>, failure_id: ?int}>  $rows
+     * @return array{rows: int, stats: array<string, array{created: int, updated: int, skipped: int}>, errors: list<string>, warnings: list<string>}
+     */
+    public function importValues(array $rows, string $fileName = 'Perbaikan langsung'): array
+    {
+        $this->issues = new ImportIssueLog($this->key(), $fileName);
+        $keys = collect($this->columns())->map(fn (array $column): string => $column[0]);
+
+        return $this->process(array_map(fn (array $row): array => [
+            'line' => $row['line'],
+            'values' => [
+                ...$keys->mapWithKeys(fn (string $key, string $label): array => [$key => $row['values'][$label] ?? null])->all(),
+                'failure_id' => $row['failure_id'] ?? null,
+            ],
+        ], $rows));
+    }
+
+    /**
+     * Kunci kategori di "Import Perlu Dicek", mis. GoodsReceiptImport => goods_receipt.
+     */
+    public function key(): string
+    {
+        return Str::snake(Str::beforeLast(class_basename($this), 'Import'));
+    }
+
+    /**
+     * @param  list<array{line: int, values: array<string, mixed>}>  $lines
+     * @return array{rows: int, stats: array<string, array{created: int, updated: int, skipped: int}>, errors: list<string>, warnings: list<string>}
+     */
+    private function process(array $lines): array
+    {
+        $this->stats = [];
+        $this->errors = [];
+        $this->warnings = [];
+        $this->existingLeft = [];
+
         collect($lines)
             ->map(fn (array $line): SpreadsheetRow => new SpreadsheetRow($line['values'], $line['line']))
             ->groupBy(fn (SpreadsheetRow $row): string => $this->groupKey($row) ?? '#'.$row->line)
-            ->each(fn (Collection $rows) => $this->attempt($rows));
+            ->each(fn (Collection $rows, string $group) => $this->attempt($rows, str_starts_with($group, '#') ? null : $group));
+
+        $this->issues->save();
 
         return [
             'rows' => count($lines),
@@ -152,6 +197,25 @@ abstract class RowImporter
             'errors' => $this->errors,
             'warnings' => array_values(array_unique($this->warnings)),
         ];
+    }
+
+    /**
+     * Template perbaikan: layout template impor + kolom hijau ID GAGAL & alasan, terisi baris yang perlu dicek.
+     *
+     * @param  iterable<SalesImportFailure>  $failures
+     */
+    public function fixTemplate(iterable $failures): string
+    {
+        $rows = [];
+
+        foreach ($failures as $failure) {
+            $rows[] = [
+                ...array_map(fn (string $label): ?string => $failure->value($label), array_keys($this->columns())),
+                $failure->id, $failure->reason->getLabel(), $failure->message, $failure->reason->hint(), $failure->file_name, $failure->line,
+            ];
+        }
+
+        return $this->workbook($rows, ImportIssueLog::FIX_COLUMNS);
     }
 
     /**
@@ -172,6 +236,14 @@ abstract class RowImporter
     protected function exportRows(): ?iterable
     {
         return null;
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function systemLabels(): array
+    {
+        return $this->systemColumns();
     }
 
     public function hasExport(): bool
@@ -197,8 +269,9 @@ abstract class RowImporter
 
     /**
      * @param  iterable<list<mixed>>  $rows
+     * @param  list<string>  $extraColumns  kolom hijau tambahan di belakang (template perbaikan)
      */
-    private function workbook(iterable $rows): string
+    private function workbook(iterable $rows, array $extraColumns = []): string
     {
         $path = Spreadsheet::tempPath('xlsx');
         $writer = new XlsxWriter;
@@ -207,13 +280,16 @@ abstract class RowImporter
         $sheet = $writer->getCurrentSheet();
         $sheet->setName(Spreadsheet::sheetName($this->title()));
 
-        foreach (array_keys($this->columns()) as $index => $label) {
-            $sheet->setColumnWidth(max(12, min(36, mb_strlen($label) + 6)), $index + 1);
+        foreach ([...array_keys($this->columns()), ...$extraColumns] as $index => $label) {
+            $sheet->setColumnWidth($index >= count($this->columns()) && $label !== ImportIssueLog::FAILURE_ID_COLUMN ? 40 : max(12, min(36, mb_strlen($label) + 6)), $index + 1);
         }
 
-        $writer->addRow(Spreadsheet::headerRow(collect(array_keys($this->columns()))
-            ->mapWithKeys(fn (string $label): array => [$label => ! in_array($label, $this->systemColumns(), true)])
-            ->all()));
+        $writer->addRow(Spreadsheet::headerRow([
+            ...collect(array_keys($this->columns()))
+                ->mapWithKeys(fn (string $label): array => [$label => ! in_array($label, $this->systemColumns(), true)])
+                ->all(),
+            ...array_fill_keys($extraColumns, false),
+        ]));
 
         foreach ($rows as $row) {
             $writer->addRow(SpreadsheetCells::row($row));
@@ -452,15 +528,18 @@ abstract class RowImporter
     /**
      * @param  Collection<int, SpreadsheetRow>  $rows
      */
-    private function attempt(Collection $rows): void
+    private function attempt(Collection $rows, ?string $group = null): void
     {
         $this->pending = [];
         $this->pendingWarnings = [];
         $lines = $rows->pluck('line');
         $where = 'Baris '.($lines->count() > 1 ? $lines->first().'-'.$lines->last() : $lines->first());
+        $errorCount = count($this->errors);
 
         try {
             DB::transaction(fn () => $this->save($rows->values()));
+
+            $rows->each(fn (SpreadsheetRow $row) => $this->issues->fixed(ImportIssueLog::failureId($row->raw('failure_id'))));
 
             foreach ($this->pending as $label => $counts) {
                 $this->stats[$label] ??= ['created' => 0, 'updated' => 0, 'skipped' => 0];
@@ -481,6 +560,22 @@ abstract class RowImporter
         } catch (Throwable $exception) {
             report($exception);
             $this->errors[] = "{$where}: terjadi kesalahan. Hubungi administrator.";
+        }
+
+        // Gagal: tiap baris dokumen dicatat di "Import Perlu Dicek" (dicoba ulang bersama lewat group_key).
+        if (count($this->errors) > $errorCount) {
+            $message = end($this->errors);
+            $labels = collect($this->columns())->map(fn (array $column): string => $column[0]);
+
+            foreach ($rows as $row) {
+                $this->issues->fail(
+                    $row->line,
+                    $labels->map(fn (string $key) => Spreadsheet::text($row->raw($key)))->all(),
+                    $message,
+                    retryOf: ImportIssueLog::failureId($row->raw('failure_id')),
+                    groupKey: $group === null ? null : $this->key().'|'.$this->issues->uploadId.'|'.$group,
+                );
+            }
         }
 
         $this->pending = [];

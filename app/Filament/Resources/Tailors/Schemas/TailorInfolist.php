@@ -58,12 +58,23 @@ class TailorInfolist
             ]);
     }
 
+    /**
+     * Upah jahit (SPK selesai sebagai penjahit) + upah potong (SPK sebagai tukang potong).
+     */
     private static function laborEarned(Tailor $record): float
     {
-        return (float) WorkOrderItem::query()
+        $sewing = (float) WorkOrderItem::query()
             ->whereHas('workOrder', fn ($query) => $query
                 ->where('tailor_id', $record->id)
                 ->where('status', WorkOrderStatus::Done))
-            ->sum(DB::raw('qty_good * COALESCE(labor_cost_snapshot, 0)'));
+            ->sum(DB::raw('qty_good * COALESCE(sewing_cost_snapshot, 0)'));
+
+        $cutting = (float) WorkOrderItem::query()
+            ->whereHas('workOrder', fn ($query) => $query
+                ->where('cutter_id', $record->id)
+                ->where('status', '!=', WorkOrderStatus::Cancelled))
+            ->sum(DB::raw('qty_cut * COALESCE(cutting_cost_snapshot, 0)'));
+
+        return $sewing + $cutting;
     }
 }

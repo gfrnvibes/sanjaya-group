@@ -42,7 +42,10 @@ class BusinessRecordObserver
                 }
             }
         }
-        if ($model instanceof Setting && $model->key !== 'report_emails') {
+        if ($model instanceof Setting && $model->key === 'supplier_billing_start' && strtotime((string) $model->value) === false) {
+            throw new BusinessRuleException('Tanggal mulai tagihan supplier harus tanggal (YYYY-MM-DD).');
+        }
+        if ($model instanceof Setting && ! in_array($model->key, ['report_emails', 'supplier_billing_start'], true)) {
             $value = $model->value;
             if (! is_numeric($value) || (float) $value < 0) {
                 throw new BusinessRuleException('Nilai pengaturan harus angka yang tidak negatif.');

@@ -5,6 +5,7 @@ namespace App\Imports;
 use App\Enums\ReturnReason;
 use App\Exceptions\BusinessRuleException;
 use App\Models\SalesOrder;
+use App\Models\SalesOrderItem;
 use App\Models\SalesReturn;
 use App\Services\SalesOrderService;
 use App\Support\SpreadsheetRow;
@@ -74,11 +75,17 @@ class SalesReturnImport extends RowImporter
         $order = $this->findCi(SalesOrder::query()->where('store_id', $store->id), 'order_no', $row->text('order_no'))
             ?? throw new BusinessRuleException("pesanan {$row->text('order_no')} di toko {$store->name} tidak ditemukan");
         $variant = $this->variant($row->text('sku'));
-        $item = $order->items()->where('variant_id', $variant->id)->first()
+        // Pesanan impor BigSeller / Website: 1 nomor pesanan bisa tersimpan sebagai beberapa baris produk.
+        $items = SalesOrderItem::query()
+            ->where('variant_id', $variant->id)
+            ->whereHas('salesOrder', fn ($query) => $query->where('store_id', $store->id)->where('order_no', $order->order_no))
+            ->orderBy('id')
+            ->get();
+        $item = $items->first(fn (SalesOrderItem $line): bool => $this->orders->returnableQty($line) > 0) ?? $items->first()
             ?? throw new BusinessRuleException("SKU {$variant->sku} tidak ada di pesanan {$order->order_no}");
 
-        if ($this->alreadyExists("{$item->id}|{$date}|{$qty}", fn (): int => SalesReturn::query()
-            ->where('sales_order_item_id', $item->id)->whereDate('returned_at', $date)->where('qty', (int) $qty)->count())) {
+        if ($this->alreadyExists("{$store->id}|{$order->order_no}|{$variant->id}|{$date}|{$qty}", fn (): int => SalesReturn::query()
+            ->whereIn('sales_order_item_id', $items->modelKeys())->whereDate('returned_at', $date)->where('qty', (int) $qty)->count())) {
             $this->bump('skipped');
 
             return;

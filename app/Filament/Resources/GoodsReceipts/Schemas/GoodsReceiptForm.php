@@ -52,10 +52,12 @@ class GoodsReceiptForm
                             ->default(GoodsReceiptSource::Borongan)
                             ->helperText('Beli Jadi: isi harga beli per pcs. HPP & harga reseller produk beli jadi dihitung otomatis (harga beli + packing + margin beli jadi).')
                             ->live()
-                            ->required(),
+                            ->required()
+                            ->disabledOn('edit'),
                         Select::make('supplier_id')
                             ->label('Supplier / Penjahit Borongan')
                             ->relationship('supplier', 'name')
+                            ->helperText(fn (string $operation): ?string => $operation === 'edit' ? 'Ganti supplier = lot & tagihan supplier barang ini ikut pindah ke supplier baru.' : null)
                             ->searchable()
                             ->preload(),
                         Textarea::make('note')

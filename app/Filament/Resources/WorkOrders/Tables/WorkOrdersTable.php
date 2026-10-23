@@ -18,7 +18,7 @@ class WorkOrdersTable
     {
         return $table
             ->modifyQueryUsing(fn (Builder $query) => $query
-                ->with(['tailor', 'warehouse', 'goodsWarehouse'])
+                ->with(['tailor', 'cutter', 'warehouse', 'goodsWarehouse'])
                 ->withSum('items as qty_cut', 'qty_cut')
                 ->withSum('items as qty_good', 'qty_good')
                 ->withSum('items as qty_reject', 'qty_reject'))
@@ -36,6 +36,10 @@ class WorkOrdersTable
                     ->label('Penjahit')
                     ->searchable()
                     ->placeholder('Belum dicatat'),
+                TextColumn::make('cutter.name')
+                    ->label('Tukang Potong')
+                    ->placeholder('Belum dicatat')
+                    ->toggleable(),
                 TextColumn::make('status')
                     ->label('Status')
                     ->badge()

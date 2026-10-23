@@ -26,13 +26,13 @@ class EditProductVariant extends EditRecord
     }
 
     /**
-     * Margin berubah: harga baru berlaku hari ini. Model/warna/ukuran berubah: dihitung dari tanggal resep.
+     * Margin / packing berubah: harga baru berlaku hari ini. Model/warna/ukuran berubah: dihitung dari tanggal resep.
      */
     protected function afterSave(): void
     {
         $variant = $this->getRecord();
 
-        if ($variant->wasChanged('margin_pct')) {
+        if ($variant->wasChanged(['margin_pct', 'packing_cost'])) {
             PriceSyncNotification::send(app(PricingService::class)->syncVariants([$variant], today()));
         } elseif ($variant->wasChanged(['model_id', 'color_id', 'size_id'])) {
             PriceSyncNotification::send(app(PricingService::class)->syncVariants([$variant]));

@@ -62,6 +62,64 @@ class TableExporter
         return $path;
     }
 
+    /**
+     * Halaman cetak (HTML siap print / Simpan sebagai PDF): kolom yang tampil, sesuai filter/pencarian/urutan.
+     */
+    public function printHtml(HasTable $livewire, string $title): string
+    {
+        $table = $livewire->getTable();
+        $columns = array_values($table->getVisibleColumns());
+        $rows = [];
+
+        foreach ($livewire->getFilteredSortedTableQuery()->lazy(500) as $record) {
+            $rows[] = collect($columns)->map(fn (Column $column): array => $this->printCell($column, $record))->all();
+
+            if (count($rows) >= self::PRINT_LIMIT) {
+                break;
+            }
+        }
+
+        $filters = collect($table->getFilters())
+            ->flatMap(fn ($filter): array => $filter->getIndicators())
+            ->map(fn ($indicator): string => strip_tags((string) $indicator->getLabel()))
+            ->filter()
+            ->values()
+            ->all();
+
+        return view('print.table', [
+            'title' => $title,
+            'headers' => collect($columns)->map(fn (Column $column): string => $this->label($column))->all(),
+            'numeric' => collect($columns)->map(fn (Column $column): bool => $column instanceof TextColumn && ($column->isNumeric() || $column->isMoney()))->all(),
+            'rows' => $rows,
+            'filters' => $filters,
+            'search' => method_exists($livewire, 'getTableSearch') ? $livewire->getTableSearch() : null,
+            'truncated' => count($rows) >= self::PRINT_LIMIT,
+            'limit' => self::PRINT_LIMIT,
+            'printedBy' => auth()->user()?->name,
+        ])->render();
+    }
+
+    /** Batas baris halaman cetak (gunakan Excel untuk data lebih besar). */
+    public const PRINT_LIMIT = 3000;
+
+    /**
+     * @return array{0: string, 1: bool} [teks tampilan, rata kanan]
+     */
+    private function printCell(Column $column, Model $record): array
+    {
+        $value = $this->value($column, $record);
+
+        if ($column instanceof TextColumn && $column->isMoney() && is_numeric($value)) {
+            return ['Rp '.number_format((float) $value, 0, ',', '.'), true];
+        }
+
+        if (is_int($value) || is_float($value)) {
+            return [number_format((float) $value, floor((float) $value) === (float) $value ? 0 : 2, ',', '.'), true];
+        }
+
+        return [(string) $value, false];
+    }
+
     private function label(Column $column): string
     {
         $label = $column->getLabel();

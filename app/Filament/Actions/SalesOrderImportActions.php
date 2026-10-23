@@ -6,6 +6,7 @@ use App\Enums\SalesImportSource;
 use App\Enums\SalesOrderStatus;
 use App\Filament\Resources\SalesImportBatches\SalesImportBatchResource;
 use App\Filament\Resources\SalesImportFailures\SalesImportFailureResource;
+use App\Imports\ImportRegistry;
 use App\Models\SalesImportBatch;
 use App\Models\Warehouse;
 use App\Services\SalesOrderImporter;
@@ -15,13 +16,14 @@ use Filament\Actions\Action;
 use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\FileUpload;
 use Filament\Forms\Components\Select;
+use Filament\Forms\Components\Toggle;
 use Filament\Notifications\Notification;
 use Filament\Support\Icons\Heroicon;
 use Illuminate\Support\Facades\Storage;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 /**
- * Template & import pesanan (multi-file), dipakai di menu Pesanan dan menu Import Gagal.
+ * Template & import pesanan (multi-file), dipakai di menu Pesanan dan Import Perlu Dicek.
  * Notifikasi hasil menyediakan unduhan file baris gagal (nilai asli + alasan) untuk diperbaiki lalu diimport ulang.
  */
 class SalesOrderImportActions
@@ -32,9 +34,18 @@ class SalesOrderImportActions
             ->authorize(fn (): bool => ApplicationAccess::allows('kelola penjualan'))
             ->label('Unduh Template')
             ->icon(Heroicon::OutlinedDocumentArrowDown)
-            ->action(fn (SalesOrderSpreadsheet $spreadsheet): BinaryFileResponse => response()
-                ->download($spreadsheet->template(), 'template-import-pesanan.xlsx')
-                ->deleteFileAfterSend());
+            ->modalHeading('Unduh Template Import Pesanan')
+            ->modalSubmitActionLabel('Unduh')
+            ->schema([
+                self::sourceField(),
+            ])
+            ->action(function (array $data, SalesOrderSpreadsheet $spreadsheet): BinaryFileResponse {
+                $source = self::source($data['source'] ?? null);
+
+                return response()
+                    ->download($spreadsheet->template($source), 'template-import-pesanan-'.$source->value.'.xlsx')
+                    ->deleteFileAfterSend();
+            });
     }
 
     public static function importAction(): Action
@@ -44,9 +55,12 @@ class SalesOrderImportActions
             ->label('Import Excel')
             ->icon(Heroicon::OutlinedArrowUpTray)
             ->modalHeading('Import Pesanan dari Excel')
-            ->modalDescription('Bisa beberapa file sekaligus (1 file = 1 batch impor), termasuk file baris gagal yang sudah diperbaiki. Format template (TANGGAL, NAMA TOKO, SKU VARIAN / SKU BIG SELLER, QTY, PENDAPATAN TOKO) atau file export BigSeller (Nama Toko, Nomor SKU Toko, Penjualan Produk Valid, Dana Penjualan Produk Valid + kolom TANGGAL di belakang). Harga reseller, margin, dan total tagihan dihitung otomatis. Baris valid disimpan; baris gagal dicatat beserta alasannya di menu Import Gagal. Dua baris produk yang sama tetap dihitung seluruh qty-nya. Unggahan ulang file dengan isi yang sama tidak menambah transaksi, meskipun nama file diubah. Stok boleh negatif dan tagihan tetap dihitung. Isi NO PESANAN berbeda untuk pesanan berbeda; gunakan nomor yang sama untuk koreksi lintas file. Tanpa nomor/ID, file yang isinya berubah dianggap impor baru. Koreksi dokumen yang sudah ditagih/diretur dikunci.')
+            ->modalDescription('Pilih Sumber Data dulu: tiap sumber punya format file sendiri. Bisa beberapa file sekaligus (1 file = 1 batch impor), termasuk file baris gagal yang sudah diperbaiki. Harga reseller, margin, dan total tagihan dihitung otomatis; baris gagal dicatat di menu Import Perlu Dicek. Unggahan ulang file yang sama tidak menambah transaksi; nomor pesanan yang sama memperbarui pesanan tersebut selama belum ditagih/diretur.')
             ->modalSubmitActionLabel('Import')
             ->schema([
+                self::sourceField()
+                    ->live()
+                    ->helperText(fn ($state): string => self::source($state)->formatHint()),
                 FileUpload::make('files')
                     ->preventFilePathTampering()
                     ->label('File (.xlsx, .csv, .ods) — boleh lebih dari satu')
@@ -67,7 +81,7 @@ class SalesOrderImportActions
                     ->required(),
                 DatePicker::make('order_date')
                     ->label('Tanggal Pesanan Cadangan')
-                    ->helperText('Untuk file export BigSeller: isi kolom TANGGAL di belakang kolom terakhir; baris yang TANGGAL-nya kosong memakai tanggal ini. SKU dengan penjualan 0 dilewati. File template manual tetap memakai kolom TANGGAL.')
+                    ->helperText('Dipakai bila kolom tanggal di file kosong (BigSeller: Waktu Pesanan Dibuat; template: TANGGAL).')
                     ->native(false),
                 Select::make('warehouse_id')
                     ->label('Gudang Asal')
@@ -75,18 +89,17 @@ class SalesOrderImportActions
                     ->default(fn () => Warehouse::defaultForGoods()?->id)
                     ->required(),
                 Select::make('status')
-                    ->label('Status Pesanan')
+                    ->label('Status Pesanan (opsional)')
                     ->options([
                         SalesOrderStatus::Completed->value => SalesOrderStatus::Completed->getLabel(),
                         SalesOrderStatus::Pending->value => SalesOrderStatus::Pending->getLabel(),
                     ])
-                    ->default(SalesOrderStatus::Completed->value)
-                    ->required(),
-                Select::make('source')
-                    ->label('Sumber Data')
-                    ->options(SalesImportSource::class)
-                    ->default(SalesImportSource::Manual->value)
-                    ->required(),
+                    ->placeholder('Kosong = Diproses (barang dikirim, belum pasti selesai / retur)')
+                    ->helperText('Pesanan Diproses belum ditagihkan ke supplier. Tandai Selesai di menu Pesanan, atau import ulang file yang sama dengan status Selesai.'),
+                Toggle::make('auto_map')
+                    ->label('Petakan SKU baru otomatis')
+                    ->helperText('SKU yang belum dikenal dicocokkan dari SKU, Nama Produk, dan Nama Variasi. Yang cukup yakin langsung disimpan di Pemetaan SKU; sisanya masuk Import Perlu Dicek.')
+                    ->default(true),
             ])
             ->action(function (array $data, SalesOrderImporter $importer): void {
                 $disk = Storage::disk('local');
@@ -98,9 +111,10 @@ class SalesOrderImportActions
                         array_map(fn (string $path): array => ['path' => $disk->path($path), 'name' => $names[$path] ?? basename($path)], $paths),
                         [
                             'warehouse_id' => (int) $data['warehouse_id'],
-                            'status' => $data['status'],
+                            'status' => $data['status'] ?? null,
                             'order_date' => $data['order_date'] ?? null,
-                            'source' => $data['source'] instanceof SalesImportSource ? $data['source']->value : $data['source'],
+                            'source' => self::source($data['source'] ?? null)->value,
+                            'auto_map' => (bool) ($data['auto_map'] ?? false),
                         ],
                     );
                 } finally {
@@ -111,8 +125,22 @@ class SalesOrderImportActions
             });
     }
 
+    private static function sourceField(): Select
+    {
+        return Select::make('source')
+            ->label('Sumber Data')
+            ->options(SalesImportSource::class)
+            ->default(SalesImportSource::BigSeller->value)
+            ->required();
+    }
+
+    private static function source(mixed $state): SalesImportSource
+    {
+        return $state instanceof SalesImportSource ? $state : (SalesImportSource::tryFrom((string) $state) ?? SalesImportSource::Manual);
+    }
+
     /**
-     * @param  array{batches: list<SalesImportBatch>, files: int, rows: int, created: int, skipped: int, fixed: int, errors: list<string>}  $result
+     * @param  array{batches: list<SalesImportBatch>, files: int, rows: int, created: int, skipped: int, fixed: int, errors: list<string>, mapped: array<string, string>}  $result
      */
     private static function notify(array $result): void
     {
@@ -122,6 +150,11 @@ class SalesOrderImportActions
 
         if ($result['fixed'] > 0) {
             $lines->push(e("{$result['fixed']} baris gagal sebelumnya kini sudah diperbaiki."));
+        }
+
+        if ($result['mapped'] !== []) {
+            $mapped = collect($result['mapped'])->map(fn (string $sku, string $raw): string => e($raw).' &rarr; '.e($sku));
+            $lines->push('', '<b>'.count($result['mapped']).' SKU baru dipetakan otomatis</b> (cek di menu Pemetaan SKU):', ...$mapped->take(10)->values()->all());
         }
 
         if ($errors->isNotEmpty()) {
@@ -153,9 +186,9 @@ class SalesOrderImportActions
                     : null,
                 $errors->isNotEmpty()
                     ? Action::make('viewFailures')
-                        ->label('Lihat alasan gagal')
+                        ->label('Perbaiki di Import Perlu Dicek')
                         ->link()
-                        ->url(SalesImportFailureResource::getUrl('index'))
+                        ->url(SalesImportFailureResource::getUrl('index', ['tab' => ImportRegistry::tab(ImportRegistry::SALES_ORDERS)]))
                     : null,
                 Action::make('viewBatch')
                     ->label(count($result['batches']) > 1 ? 'Riwayat impor' : 'Lihat batch impor')

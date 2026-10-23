@@ -2,6 +2,8 @@
 
 namespace App\Filament\Support;
 
+use App\Filament\Resources\SalesImportFailures\SalesImportFailureResource;
+use Filament\Actions\Action;
 use Filament\Notifications\Notification;
 use Illuminate\Support\Collection;
 
@@ -42,6 +44,15 @@ class ImportResultNotification
                 default => "Import {$subject} gagal",
             })
             ->body($body->implode('<br>'));
+
+        if ($errors->isNotEmpty()) {
+            $notification->actions([
+                Action::make('openIssues')
+                    ->label('Perbaiki di Import Perlu Dicek')
+                    ->button()
+                    ->url(SalesImportFailureResource::getUrl('index')),
+            ]);
+        }
 
         match (true) {
             $errors->isEmpty() && $warnings->isNotEmpty() => $notification->success()->persistent(),

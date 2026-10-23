@@ -17,7 +17,7 @@ use Illuminate\Database\Eloquent\Relations\MorphMany;
 #[Fillable([
     'sales_order_id', 'variant_id', 'sku_raw', 'qty', 'revenue',
     'reseller_price_id', 'tier_adjustment_pct', 'reseller_unit_price', 'hpp_unit',
-    'reseller_invoice_id',
+    'reseller_invoice_id', 'is_consignment',
 ])]
 class SalesOrderItem extends Model
 {
@@ -31,7 +31,14 @@ class SalesOrderItem extends Model
             'hpp_unit' => 'decimal:2',
             'bill_amount' => 'decimal:2',
             'margin' => 'decimal:2',
+            'is_consignment' => 'boolean',
         ];
+    }
+
+    /** @return HasMany<SupplierBillLine, $this> */
+    public function supplierBillLines(): HasMany
+    {
+        return $this->hasMany(SupplierBillLine::class);
     }
 
     /** @return BelongsTo<SalesOrder, $this> */

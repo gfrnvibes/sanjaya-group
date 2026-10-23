@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Enums\ChannelKind;
 use App\Exceptions\BusinessRuleException;
+use App\Imports\ImportIssueLog;
 use App\Models\Channel;
 use App\Models\Owner;
 use App\Models\OwnerTierHistory;
@@ -32,6 +33,9 @@ use OpenSpout\Writer\XLSX\Writer as XlsxWriter;
 class StoreImporter
 {
     /** Kolom input (header merah); urutan = urutan kolom file. */
+    /** Kategori di "Import Perlu Dicek". */
+    public const ISSUE_KEY = 'stores';
+
     public const COLUMNS = [
         'KODE PEMILIK' => 'owner_code',
         'NAMA PEMILIK' => 'owner_name',
@@ -76,24 +80,57 @@ class StoreImporter
      */
     public function import(string $path, string $fileName): array
     {
-        $stats = [];
-        $errors = [];
-        $warnings = [];
-
         try {
-            $lines = Spreadsheet::read($path, $fileName, [...self::COLUMNS, ...self::SYSTEM_COLUMNS], self::REQUIRED,
+            $lines = Spreadsheet::read($path, $fileName, [...self::COLUMNS, ...self::SYSTEM_COLUMNS, ImportIssueLog::FAILURE_ID_COLUMN => 'failure_id'], self::REQUIRED,
                 'Header tidak ditemukan. Pastikan ada kolom KODE PEMILIK, NAMA RESELLER, NAMA TOKO, dan KODE CHANNEL (gunakan template/export).');
         } catch (BusinessRuleException $exception) {
             return ['rows' => 0, 'stats' => [], 'errors' => [$exception->getMessage()], 'warnings' => []];
         }
 
+        return $this->process($lines, $fileName);
+    }
+
+    /**
+     * Coba ulang baris dari "Import Perlu Dicek" (nilai per LABEL HEADER).
+     *
+     * @param  list<array{line: int, values: array<string, mixed>, failure_id: ?int}>  $rows
+     * @return array{rows: int, stats: array<string, array{created: int, updated: int, skipped: int}>, errors: list<string>, warnings: list<string>}
+     */
+    public function importValues(array $rows, string $fileName = 'Perbaikan langsung'): array
+    {
+        $map = [...self::COLUMNS, ...self::SYSTEM_COLUMNS];
+
+        return $this->process(array_map(fn (array $row): array => [
+            'line' => $row['line'],
+            'values' => [
+                ...collect($map)->mapWithKeys(fn (string $key, string $label): array => [$key => $row['values'][$label] ?? null])->all(),
+                'failure_id' => $row['failure_id'] ?? null,
+            ],
+        ], $rows), $fileName);
+    }
+
+    /**
+     * @param  list<array{line: int, values: array<string, mixed>}>  $lines
+     * @return array{rows: int, stats: array<string, array{created: int, updated: int, skipped: int}>, errors: list<string>, warnings: list<string>}
+     */
+    private function process(array $lines, string $fileName): array
+    {
+        $stats = [];
+        $errors = [];
+        $warnings = [];
+        $issues = new ImportIssueLog(self::ISSUE_KEY, $fileName);
+        $labels = [...self::COLUMNS, ...self::SYSTEM_COLUMNS];
+
         foreach ($lines as $line) {
             $this->pendingWarnings = [];
             $this->pending = [];
+            $failureId = ImportIssueLog::failureId($line['values']['failure_id'] ?? null);
+            $errorCount = count($errors);
 
             try {
                 $row = $this->validate($line['values']);
                 DB::transaction(fn () => $this->storeRow($row));
+                $issues->fixed($failureId);
 
                 foreach ($this->pending as $label => $counts) {
                     $stats[$label] ??= ['created' => 0, 'updated' => 0, 'skipped' => 0];
@@ -112,11 +149,22 @@ class StoreImporter
                 report($exception);
                 $errors[] = "Baris {$line['line']}: gagal disimpan. Periksa data atau hubungi administrator.";
             }
+
+            if (count($errors) > $errorCount) {
+                $issues->fail(
+                    $line['line'],
+                    collect($labels)->map(fn (string $key) => Spreadsheet::text($line['values'][$key] ?? null))->all(),
+                    end($errors),
+                    retryOf: $failureId,
+                );
+            }
         }
 
         if ($lines === []) {
             $errors[] = 'Tidak ada baris data yang bisa diimpor.';
         }
+
+        $issues->save();
 
         return ['rows' => count($lines), 'stats' => $stats, 'errors' => $errors, 'warnings' => array_values(array_unique($warnings))];
     }

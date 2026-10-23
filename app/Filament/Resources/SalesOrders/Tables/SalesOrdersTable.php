@@ -6,16 +6,22 @@ use App\Enums\SalesOrderStatus;
 use App\Filament\Resources\SalesOrders\Schemas\SalesOrderInfolist;
 use App\Models\Channel;
 use App\Models\Reseller;
+use App\Services\SalesOrderService;
+use App\Support\ApplicationAccess;
 use Filament\Actions\ActionGroup;
+use Filament\Actions\BulkAction;
 use Filament\Actions\EditAction;
 use Filament\Actions\ViewAction;
 use Filament\Forms\Components\DatePicker;
+use Filament\Notifications\Notification;
+use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\Summarizers\Sum;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\Filter;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Collection;
 
 class SalesOrdersTable
 {
@@ -107,6 +113,31 @@ class SalesOrdersTable
                     ViewAction::make(),
                     EditAction::make(),
                 ]),
+            ])
+            ->toolbarActions([
+                BulkAction::make('complete')
+                    ->label('Tandai Selesai')
+                    ->icon(Heroicon::OutlinedCheckCircle)
+                    ->color('success')
+                    ->authorize(fn (): bool => ApplicationAccess::allows('kelola penjualan'))
+                    ->requiresConfirmation()
+                    ->modalDescription('Pesanan berstatus Diproses yang dipilih menjadi Selesai (tagihan supplier barang beli jadi ikut terbentuk). Pesanan dengan status lain dilewati.')
+                    ->deselectRecordsAfterCompletion()
+                    ->action(function (Collection $records, SalesOrderService $service): void {
+                        $done = 0;
+                        foreach ($records as $order) {
+                            if ($order->status === SalesOrderStatus::Pending) {
+                                $service->completePending($order);
+                                $done++;
+                            }
+                        }
+
+                        Notification::make()
+                            ->title("{$done} pesanan ditandai Selesai")
+                            ->body($records->count() > $done ? ($records->count() - $done).' pesanan bukan berstatus Diproses, dilewati.' : null)
+                            ->success()
+                            ->send();
+                    }),
             ]);
     }
 }

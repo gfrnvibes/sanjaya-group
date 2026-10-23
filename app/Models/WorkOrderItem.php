@@ -12,7 +12,7 @@ use Illuminate\Database\Eloquent\Relations\MorphMany;
  * Item SPK + snapshot biaya per pcs saat dipotong.
  */
 #[WithoutTimestamps]
-#[Fillable(['work_order_id', 'variant_id', 'qty_cut', 'qty_good', 'qty_reject', 'material_cost_snapshot', 'labor_cost_snapshot'])]
+#[Fillable(['work_order_id', 'variant_id', 'qty_cut', 'qty_good', 'qty_reject', 'material_cost_snapshot', 'labor_cost_snapshot', 'sewing_cost_snapshot', 'cutting_cost_snapshot'])]
 class WorkOrderItem extends Model
 {
     protected function casts(): array
@@ -23,6 +23,8 @@ class WorkOrderItem extends Model
             'qty_reject' => 'integer',
             'material_cost_snapshot' => 'decimal:2',
             'labor_cost_snapshot' => 'decimal:2',
+            'sewing_cost_snapshot' => 'decimal:2',
+            'cutting_cost_snapshot' => 'decimal:2',
         ];
     }
 

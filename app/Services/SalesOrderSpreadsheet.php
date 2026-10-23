@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Enums\SalesImportSource;
 use App\Models\ProductVariant;
 use App\Models\SalesImportFailure;
 use App\Models\SalesOrder;
@@ -27,8 +28,15 @@ class SalesOrderSpreadsheet
 {
     public const FORMATS = ['xlsx' => 'Excel (.xlsx)', 'csv' => 'CSV (.csv)', 'ods' => 'OpenDocument (.ods)'];
 
-    /** Kolom input (header merah) â€” urutan template impor. */
-    public const INPUT_COLUMNS = ['TANGGAL', 'NAMA TOKO', 'SKU VARIAN', 'SKU BIG SELLER', 'QTY', 'PENDAPATAN TOKO', 'NO PESANAN'];
+    /** Kolom template per sumber data (header merah = diisi). */
+    public static function inputColumns(SalesImportSource $source): array
+    {
+        return match ($source) {
+            SalesImportSource::BigSeller => ['Nomor Pesanan', 'Nama Panggilan Toko BigSeller', 'Waktu Pesanan Dibuat', 'Nama Produk', 'SKU', 'Nama Variasi', 'Jumlah', 'Harga Satuan', 'Subtotal Produk'],
+            SalesImportSource::Website => ['TANGGAL', 'NAMA TOKO', 'NO PESANAN', 'NAMA PRODUK', 'SKU', 'NAMA VARIASI', 'QTY', 'PENDAPATAN TOKO'],
+            default => ['TANGGAL', 'NAMA TOKO', 'SKU VARIAN', 'SKU TOKO', 'NAMA PRODUK', 'NAMA VARIASI', 'QTY', 'PENDAPATAN TOKO'],
+        };
+    }
 
     /** Kolom export: true = input (merah), false = otomatis (hijau). */
     private const EXPORT_COLUMNS = [
@@ -48,45 +56,83 @@ class SalesOrderSpreadsheet
     ];
 
     /**
-     * File template kosong (+ sheet petunjuk dan daftar referensi). Mengembalikan path file sementara.
+     * File template kosong sesuai sumber data (+ sheet petunjuk dan daftar referensi). Mengembalikan path file sementara.
      */
-    public function template(): string
+    public function template(SalesImportSource $source = SalesImportSource::Manual): string
     {
         $path = Spreadsheet::tempPath('xlsx');
         $writer = new XlsxWriter;
         $writer->openToFile($path);
 
+        $columns = self::inputColumns($source);
         $sheet = $writer->getCurrentSheet();
         $sheet->setName('Input Orderan');
-        $sheet->setColumnWidth(14, 1);
-        $sheet->setColumnWidth(30, 2);
-        $sheet->setColumnWidth(16, 3);
-        $sheet->setColumnWidth(24, 4);
-        $sheet->setColumnWidth(8, 5);
-        $sheet->setColumnWidth(18, 6);
-        $sheet->setColumnWidth(24, 7);
-        $writer->addRow(Spreadsheet::headerRow(array_fill_keys(self::INPUT_COLUMNS, true)));
+        foreach ($columns as $index => $label) {
+            $sheet->setColumnWidth(match (true) {
+                str_contains(strtoupper($label), 'NAMA PRODUK') => 40,
+                str_contains(strtoupper($label), 'TOKO') || str_contains(strtoupper($label), 'SKU') || str_contains(strtoupper($label), 'VARIASI') => 24,
+                default => 16,
+            }, $index + 1);
+        }
+        $writer->addRow(Spreadsheet::headerRow(array_fill_keys($columns, true)));
 
         Spreadsheet::addSheet($writer, 'Petunjuk', [40, 90], [
             ['KOLOM', 'KETERANGAN'],
-            ['TANGGAL', 'Tanggal pesanan. Format tanggal Excel atau teks YYYY-MM-DD / DD/MM/YYYY.'],
-            ['NAMA TOKO', 'Harus sama persis dengan nama toko di sistem (lihat sheet Daftar Toko).'],
-            ['SKU VARIAN', 'SKU varian di sistem (lihat sheet Daftar SKU). Boleh dikosongkan bila SKU BIG SELLER diisi.'],
-            ['SKU BIG SELLER', 'SKU dari BigSeller/marketplace. Dipetakan otomatis lewat menu Pemetaan SKU.'],
-            ['QTY', 'Jumlah barang, bilangan bulat minimal 1.'],
-            ['PENDAPATAN TOKO', 'Pendapatan toko untuk baris ini (boleh kosong).'],
-            ['NO PESANAN', 'Opsional: nomor transaksi unik per toko. Pesanan berbeda harus memakai nomor berbeda meskipun barang dan jumlahnya sama. Gunakan nomor yang sama hanya untuk koreksi transaksi tersebut.'],
+            ...$this->instructions($source),
             ['', ''],
-            ['Otomatis', 'Pemilik toko, nama produk, harga reseller, margin, total tagihan dihitung sistem sesuai tanggal pesanan.'],
-            ['Catatan', 'Dua baris SKU yang sama tetap dihitung seluruh qty-nya sebagai dua pesanan. Stok boleh negatif; tagihan reseller tetap dihitung. Mengunggah ulang file dengan isi yang sama tidak menambah transaksi lagi, meskipun nama file diubah.'],
-            ['', 'Gunakan NO PESANAN untuk mengenali pesanan lintas file dan koreksi. Nomor/ID yang sama dengan isi identik dilewati; perubahan memperbarui transaksi asal selama belum ditagih/diretur. Tanpa nomor/ID, file yang isinya berubah dianggap impor baru. Aturan ini juga berlaku untuk BigSeller.'],
-            ['Contoh', '2026-10-01 | Ground Supply Tiktok | TJN | | 1 | 52492'],
+            ['Status', 'Status pesanan dipilih saat import (opsional). Kosong = Diproses: barang baru dikirim, belum pasti selesai atau retur. Import ulang file yang sama dengan status Selesai untuk menyelesaikannya.'],
+            ['SKU baru', 'SKU yang belum dikenal dicocokkan otomatis dari SKU + nama produk + nama variasi (bila opsi Petakan SKU baru otomatis aktif). Yang belum yakin masuk menu Import Perlu Dicek.'],
+            ['Grosir bordir', 'Otomatis per SKU per pesanan: bila total jumlah SKU yang sama (warna + ukuran sama) dalam 1 nomor pesanan >= 10, baris SKU itu memakai harga grosir sesuai tingkatnya (mis. >= 10, >= 20). Beda warna / ukuran tidak digabung (Hitam 6 + Putih 5 bukan grosir). Tanpa nomor pesanan (Manual, Shopee, TikTok, Lazada) 1 baris = 1 pesanan. Pesanan grosir = titipan: harga ke reseller = harga supplier, tanpa laba konveksi.'],
+            ['Otomatis', 'Pemilik toko, harga reseller, margin, total tagihan dihitung sistem sesuai tanggal pesanan.'],
+            ['Catatan', 'Stok boleh negatif; tagihan reseller tetap dihitung. Mengunggah ulang file dengan isi yang sama tidak menambah transaksi lagi, meskipun nama file diubah.'],
         ]);
 
         $this->referenceSheets($writer);
         $writer->close();
 
         return $path;
+    }
+
+    /**
+     * @return list<array{0: string, 1: string}>
+     */
+    private function instructions(SalesImportSource $source): array
+    {
+        $store = 'Harus sama persis dengan nama toko di sistem (lihat sheet Daftar Toko).';
+        $sku = 'SKU di marketplace / website. Dikenali lewat SKU varian sistem atau menu Pemetaan SKU; keterangan dalam kurung, mis. "(LD 118 cm)", diabaikan.';
+
+        return match ($source) {
+            SalesImportSource::BigSeller => [
+                ['Cara pakai', 'Pakai file export pesanan BigSeller apa adanya (1 baris = 1 produk). Template ini hanya contoh susunan kolom.'],
+                ['Nomor Pesanan', 'Nomor pesanan marketplace. 1 nomor boleh berisi beberapa baris produk. Nomor + SKU yang sama di file berikutnya = koreksi pesanan tersebut.'],
+                ['Nama Panggilan Toko BigSeller', $store],
+                ['Waktu Pesanan Dibuat', 'Tanggal pesanan, mis. "16 Okt 2026 19:54". Kosong = Tanggal Pesanan Cadangan di form import.'],
+                ['Nama Produk / Nama Variasi', 'Dipakai untuk mengenali SKU baru (kode model, warna, ukuran).'],
+                ['SKU', $sku],
+                ['Jumlah', 'Jumlah barang, bilangan bulat minimal 1.'],
+                ['Harga Satuan', 'Informasi saja (tidak diimpor).'],
+                ['Subtotal Produk', 'Disimpan sebagai pendapatan toko baris ini.'],
+            ],
+            SalesImportSource::Website => [
+                ['TANGGAL', 'Tanggal pesanan. Format tanggal Excel atau teks YYYY-MM-DD / DD/MM/YYYY / 16 Okt 2026.'],
+                ['NAMA TOKO', $store],
+                ['NO PESANAN', 'Wajib: nomor pesanan website. 1 nomor boleh berisi beberapa baris produk. Nomor + SKU yang sama di file berikutnya = koreksi pesanan tersebut.'],
+                ['NAMA PRODUK / NAMA VARIASI', 'Dipakai untuk mengenali SKU baru (kode model, warna, ukuran).'],
+                ['SKU', $sku],
+                ['QTY', 'Jumlah barang, bilangan bulat minimal 1.'],
+                ['PENDAPATAN TOKO', 'Pendapatan toko untuk baris ini (boleh kosong).'],
+            ],
+            default => [
+                ['TANGGAL', 'Tanggal pesanan. Format tanggal Excel atau teks YYYY-MM-DD / DD/MM/YYYY / 16 Okt 2026.'],
+                ['NAMA TOKO', $store],
+                ['SKU VARIAN', 'SKU varian di sistem (lihat sheet Daftar SKU). Boleh kosong bila SKU TOKO diisi.'],
+                ['SKU TOKO', $sku],
+                ['NAMA PRODUK / NAMA VARIASI', 'Opsional; membantu mengenali SKU TOKO yang belum dipetakan.'],
+                ['QTY', 'Jumlah barang, bilangan bulat minimal 1.'],
+                ['PENDAPATAN TOKO', 'Pendapatan toko untuk baris ini (boleh kosong).'],
+                ['Nomor pesanan', 'Tidak perlu diisi: nomor pesanan dibuat otomatis. Dua baris yang sama tetap dihitung sebagai dua pesanan.'],
+            ],
+        };
     }
 
     /**
@@ -103,7 +149,7 @@ class SalesOrderSpreadsheet
 
         $sheet = $writer->getCurrentSheet();
         $sheet->setName('Baris Gagal');
-        foreach ([14, 30, 16, 24, 8, 18, 24, 24, 10, 24, 60, 70, 30, 8] as $index => $width) {
+        foreach ([14, 30, 16, 24, 8, 18, 24, 24, 40, 24, 10, 24, 60, 70, 30, 8] as $index => $width) {
             $sheet->setColumnWidth($width, $index + 1);
         }
 
@@ -134,7 +180,7 @@ class SalesOrderSpreadsheet
                         $failure->reason->getLabel(),
                         $failure->message,
                         $failure->reason->hint(),
-                        $failure->batch?->file_name,
+                        $failure->file_name ?? $failure->batch?->file_name,
                         $failure->line,
                     ]));
                     $rowCount++;
@@ -148,9 +194,9 @@ class SalesOrderSpreadsheet
         Spreadsheet::addSheet($writer, 'Petunjuk', [24, 100], [
             ['LANGKAH', 'KETERANGAN'],
             ['1. Perbaiki', 'Ubah kolom header MERAH sesuai ALASAN GAGAL dan CARA MEMPERBAIKI. Bila masalahnya di master data (toko belum terdaftar, SKU belum dipetakan, harga belum terbentuk), perbaiki dulu di menunya lalu biarkan baris apa adanya.'],
-            ['2. Import ulang', 'Import file ini lewat Pesanan > Import Excel. Kolom hijau boleh dibiarkan (diabaikan sistem), kecuali ID GAGAL jangan diubah.'],
-            ['3. Hasil', 'Baris yang berhasil otomatis berstatus "Sudah diperbaiki" di menu Import Gagal. Baris yang gagal lagi muncul sebagai baris gagal baru dengan alasan terbaru.'],
-            ['Hapus baris', 'Baris yang memang tidak perlu diimport (mis. pesanan uji/batal) hapus dari file, lalu tandai "Abaikan" di menu Import Gagal.'],
+            ['2. Import ulang', 'Import file ini lewat Import Perlu Dicek (tab Pesanan) atau Pesanan > Import Excel. Kolom hijau boleh dibiarkan (diabaikan sistem), kecuali ID GAGAL jangan diubah.'],
+            ['3. Hasil', 'Baris yang berhasil otomatis berstatus "Sudah diperbaiki" di menu Import Perlu Dicek. Baris yang gagal lagi muncul sebagai baris gagal baru dengan alasan terbaru.'],
+            ['Hapus baris', 'Baris yang memang tidak perlu diimport (mis. pesanan uji/batal) hapus dari file, lalu tandai "Abaikan" di menu Import Perlu Dicek.'],
             ['Aman diulang', 'Pesanan yang sudah tersimpan tidak akan dobel bila file ini diimport lebih dari sekali.'],
         ]);
 

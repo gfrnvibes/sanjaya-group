@@ -162,7 +162,7 @@ class Spreadsheet
             return null;
         }
 
-        foreach (['Y-m-d', 'Y/m/d', 'd/m/Y', 'd-m-Y', 'd.m.Y', 'Y-m-d H:i:s', 'd/m/Y H:i'] as $format) {
+        foreach (['Y-m-d', 'Y/m/d', 'd/m/Y', 'd-m-Y', 'd.m.Y', 'Y-m-d H:i:s', 'Y-m-d H:i', 'd/m/Y H:i', 'd/m/Y H:i:s', 'd-m-Y H:i'] as $format) {
             $date = DateTimeImmutable::createFromFormat('!'.$format, $value);
 
             if ($date !== false && $date->format($format) === $value) {
@@ -170,7 +170,29 @@ class Spreadsheet
             }
         }
 
-        return null;
+        return self::parseMonthNameDate($value);
+    }
+
+    /** Nama bulan Indonesia / Inggris (3 huruf pertama) => nomor bulan. */
+    private const MONTHS = [
+        'jan' => 1, 'feb' => 2, 'peb' => 2, 'mar' => 3, 'apr' => 4, 'mei' => 5, 'may' => 5, 'jun' => 6, 'jul' => 7,
+        'agu' => 8, 'agt' => 8, 'aug' => 8, 'sep' => 9, 'okt' => 10, 'oct' => 10, 'nov' => 11, 'nop' => 11, 'des' => 12, 'dec' => 12,
+    ];
+
+    /**
+     * Tanggal dengan nama bulan, mis. export BigSeller "16 Okt 2026 19:54" atau "1 Agustus 2026".
+     */
+    private static function parseMonthNameDate(string $value): ?string
+    {
+        if (! preg_match('/^(\d{1,2})[\s\-\/]+([a-z]+)\.?[\s\-\/]+(\d{4})(?:[\s,]+\d{1,2}[:.]\d{2}(?:[:.]\d{2})?)?$/i', $value, $match)) {
+            return null;
+        }
+
+        $month = self::MONTHS[Str::lower(substr($match[2], 0, 3))] ?? null;
+
+        return $month !== null && checkdate($month, (int) $match[1], (int) $match[3])
+            ? sprintf('%04d-%02d-%02d', $match[3], $month, $match[1])
+            : null;
     }
 
     /**

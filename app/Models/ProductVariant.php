@@ -29,6 +29,22 @@ class ProductVariant extends Model
     }
 
     /**
+     * Packing diubah dari form Varian / import Excel setelah ada riwayat packing bertanggal: dicatat juga sebagai
+     * riwayat mulai hari ini, supaya tidak tertutup riwayat lama (riwayat bertanggal didahulukan).
+     */
+    protected static function booted(): void
+    {
+        static::updated(function (ProductVariant $variant): void {
+            if ($variant->wasChanged('packing_cost') && $variant->packingCosts()->exists()) {
+                VariantPackingCost::updateOrCreate(
+                    ['variant_id' => $variant->id, 'effective_from' => today()->toDateString()],
+                    ['amount' => $variant->packing_cost, 'created_by' => auth()->id()],
+                );
+            }
+        });
+    }
+
+    /**
      * Produk beli jadi: HPP dari harga beli + packing, bukan dari resep.
      */
     public function isReadyMade(): bool
@@ -60,6 +76,12 @@ class ProductVariant extends Model
     public function skuAliases(): HasMany
     {
         return $this->hasMany(SkuAlias::class, 'variant_id');
+    }
+
+    /** @return HasMany<VariantPackingCost, $this> */
+    public function packingCosts(): HasMany
+    {
+        return $this->hasMany(VariantPackingCost::class, 'variant_id');
     }
 
     /** @return HasMany<VariantCost, $this> */

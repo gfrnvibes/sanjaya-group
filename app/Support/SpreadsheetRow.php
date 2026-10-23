@@ -21,6 +21,14 @@ class SpreadsheetRow
      */
     public function __construct(private array $values, public readonly int $line = 0) {}
 
+    /**
+     * Nilai sel apa adanya (untuk disimpan ulang di Import Perlu Dicek).
+     */
+    public function raw(string $key): mixed
+    {
+        return $this->values[$key] ?? null;
+    }
+
     public function text(string $key): string
     {
         return Spreadsheet::text($this->values[$key] ?? null);

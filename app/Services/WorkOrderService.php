@@ -43,6 +43,8 @@ class WorkOrderService
                     'qty_cut' => $row['qty_cut'],
                     'material_cost_snapshot' => $cost['material_cost'],
                     'labor_cost_snapshot' => $cost['labor_cost'],
+                    'sewing_cost_snapshot' => $cost['sewing_cost'],
+                    'cutting_cost_snapshot' => $cost['cutting_cost'],
                 ]);
 
                 foreach ($cost['materials'] as $line) {

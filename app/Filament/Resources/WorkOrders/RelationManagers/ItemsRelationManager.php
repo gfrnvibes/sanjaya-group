@@ -43,6 +43,15 @@ class ItemsRelationManager extends RelationManager
                     ->money('IDR', decimalPlaces: 0),
                 TextColumn::make('labor_cost_snapshot')
                     ->label('Ongkos / pcs')
+                    ->tooltip('Semua ongkos resep (masuk HPP)')
+                    ->money('IDR', decimalPlaces: 0),
+                TextColumn::make('sewing_cost_snapshot')
+                    ->label('Upah jahit / pcs')
+                    ->tooltip('Hanya ongkos JAHIT: dasar upah penjahit')
+                    ->money('IDR', decimalPlaces: 0),
+                TextColumn::make('cutting_cost_snapshot')
+                    ->label('Upah potong / pcs')
+                    ->tooltip('Hanya ongkos POTONG: dasar upah tukang potong (x qty potong)')
                     ->money('IDR', decimalPlaces: 0),
             ]);
     }

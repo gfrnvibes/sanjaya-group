@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\GoodsReceiptSource;
+use App\Services\SupplierBilling;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -14,6 +15,18 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 #[Fillable(['receipt_no', 'warehouse_id', 'received_at', 'source', 'supplier_id', 'note', 'created_by'])]
 class GoodsReceipt extends Model
 {
+    /**
+     * Supplier dikoreksi setelah barang masuk: lot beli jadi & tagihan supplier-nya ikut pindah.
+     */
+    protected static function booted(): void
+    {
+        static::updated(function (GoodsReceipt $receipt): void {
+            if ($receipt->wasChanged('supplier_id')) {
+                app(SupplierBilling::class)->changeReceiptSupplier($receipt);
+            }
+        });
+    }
+
     protected function casts(): array
     {
         return [

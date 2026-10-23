@@ -9,9 +9,10 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
- * HPP per varian (riwayat). total_cost = material_cost + labor_cost (GENERATED).
+ * HPP per varian (riwayat). total_cost = material_cost + labor_cost (GENERATED);
+ * packing_cost = bagian packing (sudah termasuk di labor_cost).
  */
-#[Fillable(['variant_id', 'effective_from', 'material_cost', 'labor_cost', 'source'])]
+#[Fillable(['variant_id', 'effective_from', 'material_cost', 'labor_cost', 'packing_cost', 'source'])]
 class VariantCost extends Model
 {
     protected function casts(): array
@@ -20,6 +21,7 @@ class VariantCost extends Model
             'effective_from' => 'date',
             'material_cost' => 'decimal:2',
             'labor_cost' => 'decimal:2',
+            'packing_cost' => 'decimal:2',
             'total_cost' => 'decimal:2',
             'source' => VariantCostSource::class,
         ];

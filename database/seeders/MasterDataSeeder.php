@@ -66,8 +66,7 @@ class MasterDataSeeder extends Seeder
         foreach ([
             'margin_default' => 0.30,
             'margin_ready_made_pct' => 0.05,
-            'margin_ready_made_amount' => 2000,
-            'packing_cost_default' => 0,
+            'packing_cost_default' => 3000,
             'price_rounding' => 500,
             'tier_price_rounding' => 100,
             'price_tolerance_pct' => 0.02,
@@ -96,6 +95,7 @@ class MasterDataSeeder extends Seeder
         $channels = [
             ['SHOPEE', 'Shopee', ChannelKind::Marketplace, [['2026-06-01', 0.08, 0.05], ['2026-09-01', 0.10, 0.05]]],
             ['TIKTOK', 'TikTok Shop', ChannelKind::Marketplace, [['2026-06-01', 0.06, 0.04]]],
+            ['LAZADA', 'Lazada', ChannelKind::Marketplace, [['2026-06-01', 0, 0]]],
             ['WA', 'WhatsApp', ChannelKind::Chat, [['2026-06-01', 0, 0]]],
             ['OFFLINE', 'Offline / Datang Langsung', ChannelKind::Offline, [['2026-06-01', 0, 0]]],
         ];

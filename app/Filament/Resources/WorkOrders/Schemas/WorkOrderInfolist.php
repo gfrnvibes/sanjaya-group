@@ -2,12 +2,12 @@
 
 namespace App\Filament\Resources\WorkOrders\Schemas;
 
+use App\Enums\WageType;
 use App\Enums\WorkOrderStatus;
 use App\Models\WorkOrder;
 use Filament\Infolists\Components\TextEntry;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
-use Illuminate\Support\Facades\DB;
 
 class WorkOrderInfolist
 {
@@ -32,6 +32,9 @@ class WorkOrderInfolist
                             }),
                         TextEntry::make('tailor.name')
                             ->label('Penjahit')
+                            ->placeholder('-'),
+                        TextEntry::make('cutter.name')
+                            ->label('Tukang Potong')
                             ->placeholder('-'),
                         TextEntry::make('warehouse.name')
                             ->label('Gudang Bahan'),
@@ -63,9 +66,11 @@ class WorkOrderInfolist
                             ->label('Total Jadi')
                             ->state(fn (WorkOrder $record): int => (int) $record->items()->sum('qty_good')),
                         TextEntry::make('labor_total')
-                            ->label('Total Ongkos Kerja (jadi)')
-                            ->state(fn (WorkOrder $record): float => (float) $record->items()->sum(DB::raw('qty_good * COALESCE(labor_cost_snapshot, 0)')))
-                            ->money('IDR', decimalPlaces: 0),
+                            ->label('Upah Jahit (sisa / total)')
+                            ->state(fn (WorkOrder $record): string => 'Rp '.number_format($record->laborDue(null, WageType::Jahit), 0, ',', '.').' / Rp '.number_format($record->laborTotal(WageType::Jahit), 0, ',', '.')),
+                        TextEntry::make('cutting_total')
+                            ->label('Upah Potong (sisa / total)')
+                            ->state(fn (WorkOrder $record): string => 'Rp '.number_format($record->laborDue(null, WageType::Potong), 0, ',', '.').' / Rp '.number_format($record->laborTotal(WageType::Potong), 0, ',', '.')),
                         TextEntry::make('paid_total')
                             ->label('Upah Sudah Dibayar')
                             ->state(fn (WorkOrder $record): float => (float) $record->tailorPayments()->sum('amount'))

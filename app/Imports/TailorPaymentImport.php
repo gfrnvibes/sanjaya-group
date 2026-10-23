@@ -2,6 +2,7 @@
 
 namespace App\Imports;
 
+use App\Enums\WageType;
 use App\Exceptions\BusinessRuleException;
 use App\Models\CashAccount;
 use App\Models\Tailor;
@@ -30,7 +31,8 @@ class TailorPaymentImport extends RowImporter
     {
         return [
             'TANGGAL BAYAR' => ['paid_at', 'Ya', 'Tanggal upah dibayar.'],
-            'NAMA PENJAHIT' => ['tailor', 'Ya', 'Belum ada = dibuat otomatis.'],
+            'NAMA PENJAHIT' => ['tailor', 'Ya', 'Penjahit atau tukang potong. Belum ada = dibuat otomatis.'],
+            'JENIS UPAH' => ['wage_type', '-', 'Upah Jahit / Upah Potong (atau jahit / potong). Default Upah Jahit.'],
             'JUMLAH' => ['amount', 'Ya', 'Jumlah rupiah (> 0).'],
             'NO SPK' => ['work_order', '-', 'Opsional: kode SPK yang dibayar (harus milik penjahit yang sama).'],
             'REKENING / KAS' => ['cash_account', '-', 'Sumber dana. Belum ada = dibuat otomatis.'],
@@ -61,6 +63,8 @@ class TailorPaymentImport extends RowImporter
         $row->maxLength(['note' => ['CATATAN', 255]]);
         $row->throwIfInvalid();
 
+        $wageType = $row->enum('wage_type', WageType::class, 'JENIS UPAH', ['jahit' => WageType::Jahit, 'potong' => WageType::Potong]) ?? WageType::Jahit;
+        $row->throwIfInvalid();
         $tailor = $this->tailor($row->text('tailor'));
         $workOrder = null;
 
@@ -68,8 +72,10 @@ class TailorPaymentImport extends RowImporter
             $workOrder = $this->findCi(WorkOrder::query(), 'code', $row->text('work_order'))
                 ?? throw new BusinessRuleException("SPK {$row->text('work_order')} tidak ditemukan");
 
-            if ($workOrder->tailor_id !== null && $workOrder->tailor_id !== $tailor->id) {
-                throw new BusinessRuleException("SPK {$workOrder->code} bukan milik penjahit {$tailor->name}");
+            $owner = $wageType === WageType::Potong ? $workOrder->cutter_id : $workOrder->tailor_id;
+
+            if ($owner !== null && $owner !== $tailor->id) {
+                throw new BusinessRuleException("SPK {$workOrder->code} bukan milik {$tailor->name} untuk {$wageType->getLabel()}");
             }
         }
 
@@ -85,6 +91,7 @@ class TailorPaymentImport extends RowImporter
         TailorPayment::create([
             'tailor_id' => $tailor->id,
             'work_order_id' => $workOrder?->id,
+            'wage_type' => $wageType,
             'paid_at' => $date,
             'amount' => $amount,
             'cash_account_id' => $account?->id,

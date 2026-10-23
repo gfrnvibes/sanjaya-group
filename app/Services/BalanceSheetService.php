@@ -62,8 +62,18 @@ class BalanceSheetService
                              JOIN material_purchases p ON p.id = i.purchase_id WHERE p.purchase_date <= ?), 0)
                  + COALESCE((SELECT SUM(i.qty * COALESCE(i.unit_cost, 0)) FROM goods_receipt_items i
                              JOIN goods_receipts r ON r.id = i.receipt_id
-                             WHERE r.source IN ('borongan', 'beli_jadi') AND r.received_at < ?), 0)
-            SQL, [$date, $date, $date, $nextDay]);
+                             WHERE (r.source = 'borongan' OR (r.source = 'beli_jadi' AND r.supplier_id IS NULL)) AND r.received_at < ?), 0)
+                 + COALESCE((SELECT SUM(amount) FROM supplier_payments WHERE paid_at <= ?), 0)
+            SQL, [$date, $date, $date, $nextDay, $date]);
+
+        // tagihan supplier beli jadi (dari pesanan, FIFO lot): positif = utang, negatif = uang muka ke supplier
+        $supplierBalances = array_map('floatval', array_column(DB::select(<<<'SQL'
+            SELECT SUM(amount) AS balance FROM (
+                SELECT supplier_id, amount FROM supplier_bill_lines WHERE supplier_id IS NOT NULL AND billed_on <= ?
+                UNION ALL
+                SELECT supplier_id, -amount FROM supplier_payments WHERE paid_at <= ?
+            ) x GROUP BY supplier_id
+            SQL, [$date, $date]), 'balance'));
 
         // saldo per reseller: positif = piutang, negatif = uang muka / titipan reseller
         $resellerBalances = array_map('floatval', DB::table('resellers as r')
@@ -115,16 +125,20 @@ class BalanceSheetService
               AND (w.status IN ('cutting', 'sewing') OR w.finished_date > ?)
             SQL, [$date, $date]);
 
-        // upah jahit per penjahit: positif = utang upah, negatif = uang muka penjahit
+        // upah jahit (SPK selesai) + upah potong (SPK dipotong) per orang: positif = utang upah, negatif = uang muka
         $tailorBalances = array_map('floatval', array_column(DB::select(<<<'SQL'
             SELECT SUM(amount) AS balance FROM (
-                SELECT w.tailor_id, i.qty_good * COALESCE(i.labor_cost_snapshot, 0) AS amount
+                SELECT w.tailor_id AS worker_id, i.qty_good * COALESCE(i.sewing_cost_snapshot, 0) AS amount
                 FROM work_order_items i JOIN work_orders w ON w.id = i.work_order_id
                 WHERE w.status = 'done' AND w.finished_date <= ?
                 UNION ALL
+                SELECT w.cutter_id, i.qty_cut * COALESCE(i.cutting_cost_snapshot, 0)
+                FROM work_order_items i JOIN work_orders w ON w.id = i.work_order_id
+                WHERE w.status <> 'cancelled' AND w.cut_date <= ?
+                UNION ALL
                 SELECT tailor_id, -amount FROM tailor_payments WHERE paid_at <= ?
-            ) x GROUP BY tailor_id
-            SQL, [$date, $date]), 'balance'));
+            ) x GROUP BY worker_id
+            SQL, [$date, $date, $date]), 'balance'));
 
         $ytdProfit = $this->scalar(<<<'SQL'
             SELECT COALESCE((SELECT SUM(bill_amount - hpp_amount) FROM v_sales_lines
@@ -141,11 +155,13 @@ class BalanceSheetService
             ['label' => 'Persediaan Barang Jadi', 'amount' => round($finishedGoods, 2)],
             ['label' => 'Persediaan Bahan Baku', 'amount' => round($materials, 2)],
             ['label' => 'Barang Dalam Proses (SPK berjalan)', 'amount' => round($workInProgress, 2)],
-            ['label' => 'Uang Muka Penjahit', 'amount' => $this->negative($tailorBalances), 'hide_zero' => true],
+            ['label' => 'Uang Muka Penjahit / Tukang Potong', 'amount' => $this->negative($tailorBalances), 'hide_zero' => true],
+            ['label' => 'Uang Muka Supplier', 'amount' => $this->negative($supplierBalances), 'hide_zero' => true],
         ];
 
         $liabilities = [
-            ['label' => 'Utang Upah Jahit', 'amount' => $this->positive($tailorBalances)],
+            ['label' => 'Utang Upah Jahit & Potong', 'amount' => $this->positive($tailorBalances)],
+            ['label' => 'Utang Supplier (barang jadi)', 'amount' => $this->positive($supplierBalances), 'hide_zero' => true],
             ['label' => 'Titipan / Uang Muka Reseller', 'amount' => $this->negative($resellerBalances), 'hide_zero' => true],
         ];
 
