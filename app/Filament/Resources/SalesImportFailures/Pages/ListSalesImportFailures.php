@@ -100,6 +100,8 @@ class ListSalesImportFailures extends ListRecords
                     )
                     ->deleteFileAfterSend()),
             Action::make('importCorrected')
+                // Tiap baris impor disimpan dalam transaksinya sendiri; jangan dibungkus transaksi panel (ribuan baris = lock habis).
+                ->databaseTransaction(false)
                 ->label('Import data yang benar')
                 ->icon(Heroicon::OutlinedArrowUpTray)
                 ->visible(fn (): bool => $this->activeCategory() !== null && ImportRegistry::allows($this->activeCategory()))
@@ -180,6 +182,8 @@ class ListSalesImportFailures extends ListRecords
     private function applySuggestionsAction(): Action
     {
         return Action::make('applySkuSuggestions')
+            // Tiap baris impor disimpan dalam transaksinya sendiri; jangan dibungkus transaksi panel (ribuan baris = lock habis).
+            ->databaseTransaction(false)
             ->label('Terapkan saran SKU')
             ->icon(Heroicon::OutlinedSparkles)
             ->color('primary')

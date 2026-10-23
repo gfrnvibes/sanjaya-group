@@ -25,6 +25,9 @@ final class ImportRegistry
 {
     public const SALES_ORDERS = 'sales_orders';
 
+    /** Jumlah baris gagal pesanan per transaksi saat coba ulang. */
+    public const SALES_RETRY_CHUNK = 200;
+
     /** Importer 1 sheet (RowImporter), urut tampilan. */
     public const ROW_IMPORTERS = [
         SkuAliasImport::class,
@@ -183,7 +186,13 @@ final class ImportRegistry
         }
 
         $result = match (true) {
-            $key === self::SALES_ORDERS => app(SalesOrderImporter::class)->retry($values, $options, $fileName),
+            // Coba ulang pesanan berjalan dalam 1 transaksi (mengunci baris gagal): dipecah per SALES_RETRY_CHUNK
+            // baris agar ribuan baris tidak menghabiskan lock database.
+            $key === self::SALES_ORDERS => ['errors' => collect($values)->chunk(self::SALES_RETRY_CHUNK, preserveKeys: true)
+                ->flatMap(fn (Collection $chunk, int $index): array => app(SalesOrderImporter::class)->retry(
+                    $chunk->all(), $options, count($values) > self::SALES_RETRY_CHUNK ? $fileName.' bagian '.($index + 1) : $fileName,
+                )['errors'])
+                ->values()->all()],
             $key === StoreImporter::ISSUE_KEY => app(StoreImporter::class)->importValues($rows, $fileName),
             isset($category['sheet']) => app(CatalogImporter::class)->importValues($category['sheet'], $rows, $fileName),
             default => app($category['class'])->importValues($rows, $fileName),

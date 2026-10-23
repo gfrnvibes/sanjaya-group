@@ -51,6 +51,8 @@ class SalesOrderImportActions
     public static function importAction(): Action
     {
         return Action::make('import')
+            // Tiap baris impor disimpan dalam transaksinya sendiri; jangan dibungkus transaksi panel (ribuan baris = lock habis).
+            ->databaseTransaction(false)
             ->authorize(fn (): bool => ApplicationAccess::allows('kelola penjualan'))
             ->label('Import Excel')
             ->icon(Heroicon::OutlinedArrowUpTray)

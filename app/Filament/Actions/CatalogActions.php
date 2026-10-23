@@ -83,6 +83,8 @@ class CatalogActions
         $title = $sheet === null ? null : CatalogImporter::SHEETS[$sheet]['title'];
 
         return Action::make('importCatalog'.($sheet === null ? '' : "_{$sheet}"))
+            // Tiap baris impor disimpan dalam transaksinya sendiri; jangan dibungkus transaksi panel (ribuan baris = lock habis).
+            ->databaseTransaction(false)
             ->authorize(fn (): bool => ApplicationAccess::allows('kelola katalog') && ApplicationAccess::allows('kelola stok'))
             ->label($sheet === null ? 'Import Katalog' : 'Import Excel')
             ->icon(Heroicon::OutlinedArrowUpTray)

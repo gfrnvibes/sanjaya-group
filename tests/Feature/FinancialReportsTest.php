@@ -2,6 +2,8 @@
 
 use App\Enums\ReturnReason;
 use App\Exceptions\BusinessRuleException;
+use App\Models\Material;
+use App\Models\MaterialType;
 use App\Models\StoreAdSpend;
 use App\Services\BalanceSheetService;
 use App\Services\CostingService;
@@ -57,9 +59,13 @@ it('excludes later transactions and future opening balances from a historical ba
     expect(collect($sheets['konveksi']['assets'])->firstWhere('label', 'Piutang Reseller')['amount'])->toBe(1000.0);
 });
 
-it('refuses future material prices when calculating historical production cost', function () {
+it('uses the earliest known material price before it was recorded, and refuses materials without any price', function () {
     $f = businessFixture();
-    expect(fn () => app(CostingService::class)->latestUnitCost($f['material'], '2025-12-31'))
+    expect(app(CostingService::class)->latestUnitCost($f['material'], '2025-12-31'))->toEqual('60.0000');
+
+    $type = MaterialType::create(['code' => 'NOPRICE', 'name' => 'Tanpa harga', 'kind' => 'kain']);
+    $unpriced = Material::create(['material_type_id' => $type->id, 'code' => 'NOPRICE', 'base_uom' => 'cm', 'qty_per_pack' => 1, 'is_active' => true]);
+    expect(fn () => app(CostingService::class)->latestUnitCost($unpriced, '2026-10-31'))
         ->toThrow(BusinessRuleException::class, 'Harga bahan');
 });
 

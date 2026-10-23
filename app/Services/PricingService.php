@@ -272,7 +272,23 @@ class PricingService
      */
     public function syncForMaterials(iterable $materialIds, CarbonInterface|string $date): array
     {
-        return $this->syncVariants($this->variantsUsingMaterials($materialIds), $date);
+        $date = Carbon::parse($date)->toDateString();
+        $result = ['synced' => 0, 'skipped' => []];
+
+        // Pembelian sebelum resep berlaku: harga dihitung ulang mulai tanggal resep pertama (memakai harga beli ini).
+        collect($this->variantsUsingMaterials($materialIds))
+            ->groupBy(fn (ProductVariant $variant): string => $this->costing->bomFor($variant, $date) !== null
+                ? $date
+                : (Bom::query()->where('model_id', $variant->model_id)
+                    ->where(fn ($query) => $query->whereNull('size_id')->orWhere('size_id', $variant->size_id))
+                    ->min('effective_from') ?? $date))
+            ->each(function ($variants, string $from) use (&$result): void {
+                $synced = $this->syncVariants($variants, Carbon::parse($from)->toDateString());
+                $result['synced'] += $synced['synced'];
+                $result['skipped'] = [...$result['skipped'], ...$synced['skipped']];
+            });
+
+        return $result;
     }
 
     /**

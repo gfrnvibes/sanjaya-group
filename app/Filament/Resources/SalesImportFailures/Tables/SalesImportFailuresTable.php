@@ -146,6 +146,8 @@ class SalesImportFailuresTable
             ->toolbarActions([
                 BulkActionGroup::make([
                     BulkAction::make('retrySelected')
+                        // Tiap baris impor disimpan dalam transaksinya sendiri; jangan dibungkus transaksi panel (ribuan baris = lock habis).
+                        ->databaseTransaction(false)
                         ->label('Coba ulang yang dipilih')
                         ->icon(Heroicon::OutlinedArrowPath)
                         ->modalDescription('Pakai setelah master data dibenahi (mis. toko/varian/gudang sudah didaftarkan). Baris dicoba ulang per kategori dengan isi yang sama.')
@@ -206,6 +208,8 @@ class SalesImportFailuresTable
     private static function editAction(): Action
     {
         return Action::make('edit')
+            // Tiap baris impor disimpan dalam transaksinya sendiri; jangan dibungkus transaksi panel (ribuan baris = lock habis).
+            ->databaseTransaction(false)
             ->label('Edit')
             ->icon(Heroicon::OutlinedPencilSquare)
             ->visible(fn (SalesImportFailure $record): bool => self::isRetryable($record))
@@ -239,6 +243,8 @@ class SalesImportFailuresTable
     private static function retryAction(): Action
     {
         return Action::make('retry')
+            // Tiap baris impor disimpan dalam transaksinya sendiri; jangan dibungkus transaksi panel (ribuan baris = lock habis).
+            ->databaseTransaction(false)
             ->label('Coba ulang')
             ->icon(Heroicon::OutlinedArrowPath)
             ->visible(fn (SalesImportFailure $record): bool => self::isRetryable($record))
@@ -255,6 +261,8 @@ class SalesImportFailuresTable
     private static function mapSkuAction(): Action
     {
         return Action::make('mapSku')
+            // Tiap baris impor disimpan dalam transaksinya sendiri; jangan dibungkus transaksi panel (ribuan baris = lock habis).
+            ->databaseTransaction(false)
             ->label('Petakan SKU')
             ->icon(Heroicon::OutlinedSparkles)
             ->color('primary')
@@ -327,6 +335,8 @@ class SalesImportFailuresTable
     private static function correctSkuAction(): Action
     {
         return Action::make('correctSku')
+            // Tiap baris impor disimpan dalam transaksinya sendiri; jangan dibungkus transaksi panel (ribuan baris = lock habis).
+            ->databaseTransaction(false)
             ->label('Koreksi SKU baris ini saja')
             ->icon(Heroicon::OutlinedPencil)
             ->visible(fn (SalesImportFailure $record): bool => $record->importer === ImportRegistry::SALES_ORDERS && self::isRetryable($record))

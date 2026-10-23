@@ -20,6 +20,7 @@ use App\Models\ProductVariant;
 use App\Models\Setting;
 use App\Models\VariantCost;
 use Carbon\CarbonInterface;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Carbon;
 
 /**
@@ -92,6 +93,8 @@ class CostingService
 
     /**
      * Harga per satuan dasar dari pembelian atau stok awal yang sudah berlaku pada tanggal tersebut.
+     * Belum ada harga sampai tanggal itu (mis. resep berlaku 1 Agustus, stok awal bahan baru dicatat Oktober):
+     * pakai harga paling awal yang diketahui, supaya HPP resep tetap terbentuk sejak tanggal resep.
      */
     public function latestUnitCost(Material $material, CarbonInterface|string $date): string
     {
@@ -109,7 +112,8 @@ class CostingService
             ->orderByDesc('material_purchases.purchase_date')
             ->orderByDesc('material_purchase_items.id')
             ->value('material_purchase_items.unit_cost')
-            ?? $openingCost()->where('moved_at', '<', Carbon::parse($date)->addDay()->startOfDay())->orderByDesc('moved_at')->value('unit_cost');
+            ?? $openingCost()->where('moved_at', '<', Carbon::parse($date)->addDay()->startOfDay())->orderByDesc('moved_at')->value('unit_cost')
+            ?? $this->earliestUnitCost($purchases(), $openingCost());
 
         if ($cost === null) {
             throw new BusinessRuleException("Harga bahan {$material->code} belum tersedia pada tanggal tersebut.");
@@ -119,7 +123,23 @@ class CostingService
     }
 
     /**
-     * @return array{material_cost: float, labor_cost: float, sewing_cost: float, cutting_cost: float, materials: list<array{material: Material, qty_per_unit: float, unit_cost: float}>}
+     * Harga bahan paling awal: pembelian pertama atau stok awal pertama, mana yang lebih dulu.
+     */
+    private function earliestUnitCost(Builder $purchases, Builder $openingCost): ?string
+    {
+        $purchase = $purchases->orderBy('material_purchases.purchase_date')->orderBy('material_purchase_items.id')
+            ->first(['material_purchases.purchase_date as at', 'material_purchase_items.unit_cost']);
+        $opening = $openingCost->orderBy('moved_at')->orderBy('id')->first(['moved_at as at', 'unit_cost']);
+
+        $first = collect([$purchase, $opening])->filter()
+            ->sortBy(fn ($row): string => Carbon::parse($row->at)->toDateString())
+            ->first();
+
+        return $first === null ? null : (string) $first->unit_cost;
+    }
+
+    /**
+     * @return array{material_cost: float, labor_cost: float, sewing_cost: float, cutting_cost: float, materials:list<array{material: Material, qty_per_unit: float, unit_cost: float}>}
      */
     public function calculate(ProductVariant $variant, CarbonInterface|string $date): array
     {

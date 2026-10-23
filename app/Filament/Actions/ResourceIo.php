@@ -141,6 +141,8 @@ class ResourceIo
         $title = app($importer)->title();
 
         return Action::make("{$prefix}Import")
+            // Tiap baris impor disimpan dalam transaksinya sendiri; jangan dibungkus transaksi panel (ribuan baris = lock habis).
+            ->databaseTransaction(false)
             ->authorize(fn (): bool => ApplicationAccess::allows(app($importer)->permission()))
             ->label('Import Excel')
             ->icon(Heroicon::OutlinedArrowUpTray)

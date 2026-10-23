@@ -14,6 +14,7 @@ use App\Observers\BusinessRecordObserver;
 use App\Services\SalesDashboardService;
 use App\Services\SkuMatcher;
 use App\Support\ApplicationAccess;
+use Filament\Forms\Components\TextInput;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Foundation\DevCommands;
@@ -35,6 +36,8 @@ class AppServiceProvider extends ServiceProvider
     {
         $this->app->scoped(SalesDashboardService::class);
         $this->app->scoped(SkuMatcher::class); // indeks varian dibangun sekali per request (saran SKU per baris tabel)
+        // Semua TextInput::make() memakai versi aplikasi: input angka otomatis berpemisah ribuan titik.
+        $this->app->bind(TextInput::class, \App\Filament\Forms\Components\TextInput::class);
     }
 
     /**

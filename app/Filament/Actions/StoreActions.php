@@ -60,6 +60,8 @@ class StoreActions
     public static function importAction(): Action
     {
         return Action::make('importStores')
+            // Tiap baris impor disimpan dalam transaksinya sendiri; jangan dibungkus transaksi panel (ribuan baris = lock habis).
+            ->databaseTransaction(false)
             ->authorize(fn (): bool => ApplicationAccess::allows('kelola mitra'))
             ->label('Import Pemilik, Reseller & Toko')
             ->icon(Heroicon::OutlinedArrowUpTray)

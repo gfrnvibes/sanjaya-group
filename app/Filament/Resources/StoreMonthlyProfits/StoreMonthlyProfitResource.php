@@ -2,10 +2,10 @@
 
 namespace App\Filament\Resources\StoreMonthlyProfits;
 
+use App\Filament\Forms\Components\TextInput;
 use App\Filament\Resources\StoreMonthlyProfits\Pages\ManageStoreMonthlyProfits;
 use App\Models\StoreMonthlyProfit;
 use BackedEnum;
-use Filament\Forms\Components\TextInput;
 use Filament\Resources\Resource;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\Summarizers\Sum;
@@ -90,6 +90,7 @@ class StoreMonthlyProfitResource extends Resource
                         TextInput::make('year')
                             ->label('Tahun')
                             ->integer()
+                            ->plainNumber()
                             ->default(now()->year),
                     ])
                     ->query(fn (Builder $query, array $data): Builder => $query->when(

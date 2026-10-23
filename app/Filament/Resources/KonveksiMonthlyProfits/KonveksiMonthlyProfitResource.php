@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\KonveksiMonthlyProfits;
 
+use App\Filament\Forms\Components\TextInput;
 use App\Filament\Resources\KonveksiMonthlyProfits\Pages\ManageKonveksiMonthlyProfits;
 use App\Models\KonveksiMonthlyProfit;
 use BackedEnum;
@@ -11,7 +12,6 @@ use Filament\Tables\Columns\Summarizers\Sum;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\Filter;
 use Filament\Tables\Table;
-use Filament\Forms\Components\TextInput;
 use Illuminate\Database\Eloquent\Builder;
 use UnitEnum;
 
@@ -74,6 +74,7 @@ class KonveksiMonthlyProfitResource extends Resource
                         TextInput::make('year')
                             ->label('Tahun')
                             ->integer()
+                            ->plainNumber()
                             ->default(now()->year),
                     ])
                     ->query(fn (Builder $query, array $data): Builder => $query->when(
