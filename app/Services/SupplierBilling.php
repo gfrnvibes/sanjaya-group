@@ -4,66 +4,42 @@ namespace App\Services;
 
 use App\Enums\GoodsReceiptSource;
 use App\Enums\SalesOrderStatus;
+use App\Enums\StockMovementType;
 use App\Models\GoodsReceipt;
 use App\Models\GoodsReceiptItem;
 use App\Models\ProductModel;
 use App\Models\ProductVariant;
 use App\Models\SalesOrderItem;
-use App\Models\SalesReturn;
 use App\Models\Setting;
 use App\Models\StockLot;
+use App\Models\StockMovement;
 use App\Models\SupplierBillLine;
 use App\Models\SupplierWholesalePrice;
 use App\Models\VariantCost;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 /**
- * TAGIHAN SUPPLIER produk beli jadi, FIFO per lot:
- *  - Barang Masuk sumber Beli Jadi (berharga) = 1 lot (supplier, harga beli, sisa qty);
- *  - pesanan Selesai mengambil qty dari lot paling lama -> baris tagihan ke supplier lot itu;
- *    lot habis (stok minus) -> baris "belum teralokasi", dialokasikan otomatis saat ada lot baru;
- *  - pesanan grosir bordir (titipan) ditagihkan ke supplier grosir dengan harga grosir;
- *  - batal / koreksi qty impor membatalkan baris & mengembalikan lot; retur yang kembali ke stok
- *    mengurangi tagihan (baris negatif) dan mengembalikan qty ke lot asal.
- * Hanya pesanan mulai tanggal pengaturan supplier_billing_start yang ditagihkan.
- *
- * Mode "berdasarkan barang keluar" (pengaturan supplier_billing_mode = barang_keluar, sementara selama stok barang jadi
- * belum diinput): tanpa lot/FIFO — tiap pesanan Selesai langsung ditagihkan ke supplier Model Produk dengan harga beli
- * (komponen harga beli HPP) yang berlaku pada tanggal pesanan. Model tanpa supplier = baris "belum ada supplier".
+ * TAGIHAN SUPPLIER produk beli jadi (beli putus + dikirim langsung supplier):
+ *  - TAGIHAN PEMBELIAN: Barang Masuk sumber Beli Jadi dengan supplier & qty > 0 -> stok masuk konveksi dan
+ *    tagihan qty x harga beli pada tanggal terima. Barang Masuk tanpa supplier = dibayar tunai (tanpa tagihan).
+ *  - Penjualan beli jadi mengambil STOK KONVEKSI dulu (tanpa tagihan; sudah dibeli). Kekurangannya
+ *    (dropship_qty) DIKIRIM LANGSUNG SUPPLIER: tanpa mutasi stok, jadi TAGIHAN BARANG KELUAR ke supplier
+ *    Model Produk dengan harga beli (HPP tanpa packing) pada tanggal pesanan — hanya untuk pesanan Selesai.
+ *  - Titipan grosir bordir: aturan stok sama; bagian yang dikirim supplier ditagih harga grosir ke supplier grosir.
+ *  - Retur masuk stok konveksi dan TIDAK mengurangi tagihan supplier.
+ * Hanya pembelian / pesanan mulai tanggal pengaturan supplier_billing_start yang ditagihkan.
  */
 class SupplierBilling
 {
     public const DEFAULT_START = '2026-08-01';
 
-    /** Tagihan dari pesanan Selesai (barang keluar) ke supplier Model Produk, tanpa stok. */
-    public const MODE_SALES = 'barang_keluar';
-
-    /** Tagihan FIFO per lot Barang Masuk Beli Jadi. */
-    public const MODE_STOCK = 'stok';
-
-    public const MODES = [
-        self::MODE_SALES => 'Berdasarkan barang keluar (tanpa stok)',
-        self::MODE_STOCK => 'Berdasarkan stok Barang Masuk (FIFO)',
-    ];
+    public function __construct(private StockLedger $ledger) {}
 
     public function startDate(): string
     {
         return Carbon::parse(Setting::valueOf('supplier_billing_start', self::DEFAULT_START))->toDateString();
-    }
-
-    public function mode(): string
-    {
-        $mode = Setting::valueOf('supplier_billing_mode', self::MODE_STOCK);
-
-        return isset(self::MODES[$mode]) ? $mode : self::MODE_STOCK;
-    }
-
-    public function billsBySales(): bool
-    {
-        return $this->mode() === self::MODE_SALES;
     }
 
     /**
@@ -80,148 +56,128 @@ class SupplierBilling
         return $cost === null ? null : (float) $cost;
     }
 
+    // ---------------------------------------------------------------- stok penjualan
+
     /**
-     * Supplier Model Produk diganti (mode barang keluar): baris tagihan normal varian model itu pindah ke supplier baru
-     * dengan harga beli pada tanggal pesanannya. Titipan grosir tetap ke supplier grosirnya.
+     * Catat stok keluar 1 baris penjualan: beli jadi mengambil stok konveksi yang tersedia pada tanggal pesanan,
+     * sisanya dikirim langsung supplier (dropship_qty, tanpa mutasi stok). Produk produksi selalu dari stok.
      */
-    public function modelSupplierChanged(ProductModel $model): void
+    public function shipFromStock(SalesOrderItem $item): void
     {
-        if (! $this->billsBySales()) {
+        $item->loadMissing(['salesOrder', 'variant.model']);
+        $order = $item->salesOrder;
+
+        if ($order->status === SalesOrderStatus::Cancelled) {
             return;
         }
 
-        SupplierBillLine::query()
-            ->with(['variant', 'salesOrderItem.salesOrder'])
-            ->whereIn('variant_id', $model->variants()->withTrashed()->select('id'))
-            ->where('is_consignment', false)
-            ->whereNull('stock_lot_id')
-            ->get()
-            ->each(fn (SupplierBillLine $line) => $line->update([
-                'supplier_id' => $model->supplier_id,
-                'unit_cost' => $model->supplier_id === null || $line->variant === null
-                    ? null
-                    : $this->purchasePrice($line->variant, $line->salesOrderItem?->salesOrder?->order_date ?? $line->billed_on),
-            ]));
+        $fromStock = $item->qty;
+
+        if ($item->variant?->isReadyMade()) {
+            $this->ledger->lockBalance('stock', $item->variant_id, $order->warehouse_id);
+            $fromStock = min($item->qty, $this->ledger->availableStockAt($item->variant_id, $order->warehouse_id, $order->order_date));
+        }
+
+        if ($fromStock > 0) {
+            $this->ledger->moveStock(
+                $item->variant_id, $order->warehouse_id, -$fromStock, StockMovementType::SaleOut,
+                $item, $item->hpp_unit, movedAt: $order->order_date,
+            );
+        }
+
+        $item->update(['dropship_qty' => $item->qty - $fromStock]);
     }
 
     /**
-     * Barang masuk beli jadi berharga -> lot baru, lalu alokasikan tagihan yang tertunda untuk varian itu.
+     * Kembalikan stok yang pernah dikeluarkan baris penjualan (batal / koreksi qty). Bagian dikirim supplier tidak punya stok.
      */
-    public function receive(GoodsReceiptItem $item): ?StockLot
+    public function returnToStock(SalesOrderItem $item, string $note = 'Koreksi penjualan'): void
+    {
+        $item->loadMissing('salesOrder');
+        $posted = -(int) StockMovement::query()->where('source_type', $item->getMorphClass())->where('source_id', $item->id)->sum('qty');
+
+        if ($posted > 0) {
+            $this->ledger->moveStock(
+                $item->variant_id, $item->salesOrder->warehouse_id, $posted, StockMovementType::SaleCancel,
+                $item, $item->hpp_unit, $note, $item->salesOrder->order_date,
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------- tagihan
+
+    /**
+     * Tagihan Pembelian untuk 1 baris Barang Masuk Beli Jadi ber-supplier. Aman dipanggil ulang.
+     */
+    public function purchased(GoodsReceiptItem $item): void
     {
         $item->loadMissing('receipt');
         $receipt = $item->receipt;
 
-        // Mode barang keluar: tanpa lot (stok belum dipakai untuk tagihan); lot dibentuk saat kembali ke mode stok + hitung ulang.
-        // Qty 0 = hanya catat harga beli: tidak ada barang, tidak ada lot.
-        if ($this->billsBySales() || $item->qty <= 0 || $receipt?->source !== GoodsReceiptSource::BeliJadi || $item->unit_cost === null || StockLot::query()->where('goods_receipt_item_id', $item->id)->exists()) {
-            return null;
+        if ($receipt?->source !== GoodsReceiptSource::BeliJadi || $receipt->supplier_id === null || $item->qty <= 0 || $item->unit_cost === null
+            || $receipt->received_at->toDateString() < $this->startDate()
+            || SupplierBillLine::query()->where('goods_receipt_item_id', $item->id)->exists()) {
+            return;
         }
 
-        $lot = StockLot::create([
+        SupplierBillLine::create([
+            'kind' => SupplierBillLine::KIND_PURCHASE,
+            'goods_receipt_item_id' => $item->id,
             'variant_id' => $item->variant_id,
             'supplier_id' => $receipt->supplier_id,
-            'goods_receipt_item_id' => $item->id,
-            'received_at' => $receipt->received_at,
-            'unit_cost' => $item->unit_cost,
+            'billed_on' => $receipt->received_at,
             'qty' => $item->qty,
-            'qty_remaining' => $item->qty,
+            'unit_cost' => $item->unit_cost,
         ]);
-
-        $this->allocatePending($item->variant_id);
-
-        return $lot;
     }
 
     /**
-     * Koreksi supplier Barang Masuk: lot ikut pindah supplier, begitu juga baris tagihan normal dari lot itu
-     * (lot tanpa supplier = tunai, tanpa nilai tagihan). Titipan grosir tetap ke supplier grosirnya.
+     * Supplier / qty Barang Masuk berubah: Tagihan Pembelian dokumen itu dibuat ulang.
      */
     public function changeReceiptSupplier(GoodsReceipt $receipt): void
     {
-        $lots = StockLot::query()->whereIn('goods_receipt_item_id', $receipt->items()->select('id'))->get();
-
-        foreach ($lots as $lot) {
-            $lot->update(['supplier_id' => $receipt->supplier_id]);
-
-            SupplierBillLine::query()
-                ->where('stock_lot_id', $lot->id)
-                ->where('is_consignment', false)
-                ->update([
-                    'supplier_id' => $receipt->supplier_id,
-                    'unit_cost' => $receipt->supplier_id === null ? null : $lot->unit_cost,
-                ]);
-        }
+        SupplierBillLine::query()->whereIn('goods_receipt_item_id', $receipt->items()->select('id'))->delete();
+        $receipt->items()->get()->each(fn (GoodsReceiptItem $item) => $this->purchased($item->setRelation('receipt', $receipt)));
     }
 
     /**
-     * Tagihan untuk 1 baris pesanan (dipanggil saat pesanan Selesai). Aman dipanggil ulang.
+     * Tagihan Barang Keluar untuk 1 baris pesanan Selesai: bagian yang dikirim langsung supplier. Aman dipanggil ulang.
      */
-    public function bill(SalesOrderItem $item, bool $record = true): void
+    public function bill(SalesOrderItem $item): void
     {
         $item->loadMissing(['salesOrder', 'variant.model']);
         $order = $item->salesOrder;
 
         if (! in_array($order?->status, [SalesOrderStatus::Completed, SalesOrderStatus::Returned], true)
             || ! $item->variant?->isReadyMade()
+            || $item->dropship_qty <= 0
+            || $order->order_date->toDateString() < $this->startDate()
             || $item->supplierBillLines()->exists()) {
             return;
         }
 
-        $record = $record && $order->order_date->toDateString() >= $this->startDate();
-        // Supplier titipan grosir (harga grosir dihitung dari total SKU per pesanan, jadi qty baris ini bisa di bawah minimal qty).
+        // Titipan grosir: harga grosir (dihitung dari total SKU per pesanan) ke supplier grosir.
         $wholesale = $item->is_consignment ? $this->wholesaleFor($item->variant, 2_147_483_647, $order->order_date) : null;
+        $supplierId = $wholesale['supplier_id'] ?? $item->variant->model?->supplier_id;
+        $unitCost = $item->is_consignment ? (float) $item->hpp_unit : $this->purchasePrice($item->variant, $order->order_date);
 
-        if ($this->billsBySales()) {
-            if ($record) {
-                $supplierId = $wholesale['supplier_id'] ?? $item->variant->model?->supplier_id;
-                $unitCost = $item->is_consignment ? (float) $item->hpp_unit : $this->purchasePrice($item->variant, $order->order_date);
-                $this->line($item, $order->order_date, $item->qty, $supplierId, $unitCost, null);
-            }
-
-            return;
-        }
-
-        $left = $item->qty;
-
-        foreach ($this->openLots($item->variant_id) as $lot) {
-            $take = min($left, $lot->qty_remaining);
-            $lot->decrement('qty_remaining', $take);
-            $left -= $take;
-
-            // Lot tanpa supplier (beli jadi dibayar tunai saat diterima): baris tercatat tanpa supplier & nilai.
-            if ($record) {
-                $this->line($item, $order->order_date, $take, $wholesale['supplier_id'] ?? $lot->supplier_id, $item->is_consignment ? (float) $item->hpp_unit : (float) $lot->unit_cost, $lot->id);
-            }
-
-            if ($left === 0) {
-                break;
-            }
-        }
-
-        if ($left > 0 && $record) {
-            // Stok minus: titipan grosir tetap tertagih ke supplier grosirnya; selain itu menunggu lot berikutnya.
-            $item->is_consignment && $wholesale !== null
-                ? $this->line($item, $order->order_date, $left, $wholesale['supplier_id'], (float) $item->hpp_unit, null)
-                : $this->line($item, $order->order_date, $left, null, null, null);
-        }
+        SupplierBillLine::create([
+            'kind' => SupplierBillLine::KIND_GOODS_OUT,
+            'sales_order_item_id' => $item->id,
+            'variant_id' => $item->variant_id,
+            'supplier_id' => $supplierId,
+            'billed_on' => $order->order_date,
+            'qty' => $item->dropship_qty,
+            'unit_cost' => $supplierId === null ? null : $unitCost, // tanpa supplier = menunggu supplier Model Produk
+            'is_consignment' => $item->is_consignment,
+        ]);
     }
 
     /**
-     * Batalkan tagihan baris pesanan (batal / koreksi): qty kembali ke lot asal.
+     * Batalkan Tagihan Barang Keluar baris pesanan (batal / koreksi).
      */
     public function reverse(SalesOrderItem $item): void
     {
-        $lines = $item->supplierBillLines()->lockForUpdate()->get();
-
-        foreach ($lines->whereNotNull('stock_lot_id')->groupBy('stock_lot_id') as $lotId => $lotLines) {
-            $net = (int) $lotLines->sum('qty');
-
-            if ($net > 0) {
-                StockLot::query()->whereKey($lotId)->increment('qty_remaining', $net);
-            }
-        }
-
         $item->supplierBillLines()->delete();
     }
 
@@ -232,108 +188,38 @@ class SupplierBilling
     }
 
     /**
-     * Retur yang kembali ke stok: kurangi tagihan (yang belum teralokasi dulu, lalu lot terbaru) dan kembalikan qty ke lot.
-     * Retur tanpa restock (barang rusak/hilang) tetap ditagih supplier, termasuk titipan grosir bordir.
+     * Supplier Model Produk diganti: Tagihan Barang Keluar normal varian model itu pindah ke supplier baru
+     * dengan harga beli pada tanggal pesanannya. Titipan grosir tetap ke supplier grosirnya.
      */
-    public function returned(SalesReturn $return): void
+    public function modelSupplierChanged(ProductModel $model): void
     {
-        if (! $return->restock) {
-            return;
-        }
-
-        $left = $return->qty;
-        $lines = SupplierBillLine::query()->where('sales_order_item_id', $return->sales_order_item_id)->lockForUpdate()->orderBy('id')->get();
-
-        // Sisa qty per sumber (lot / belum teralokasi) setelah retur sebelumnya.
-        $sources = $lines->groupBy(fn (SupplierBillLine $line): string => ($line->stock_lot_id ?? 'x').'|'.($line->supplier_id ?? 'x').'|'.$line->unit_cost.'|'.(int) $line->is_consignment)
-            ->map(fn ($group): array => ['line' => $group->firstWhere('qty', '>', 0), 'net' => (int) $group->sum('qty')])
-            ->filter(fn (array $source): bool => $source['net'] > 0 && $source['line'] !== null)
-            ->sortBy(fn (array $source): array => [$source['line']->stock_lot_id === null ? 0 : 1, -($source['line']->stock_lot_id ?? 0)]);
-
-        foreach ($sources as $source) {
-            $take = min($left, $source['net']);
-            /** @var SupplierBillLine $line */
-            $line = $source['line'];
-
-            SupplierBillLine::create([
-                ...$line->only(['sales_order_item_id', 'variant_id', 'supplier_id', 'stock_lot_id', 'unit_cost', 'is_consignment']),
-                'sales_return_id' => $return->id,
-                'billed_on' => $return->returned_at,
-                'qty' => -$take,
-            ]);
-
-            if ($line->stock_lot_id !== null) {
-                StockLot::query()->whereKey($line->stock_lot_id)->increment('qty_remaining', $take);
-            }
-
-            $left -= $take;
-
-            if ($left === 0) {
-                break;
-            }
-        }
+        SupplierBillLine::query()
+            ->with(['variant', 'salesOrderItem.salesOrder'])
+            ->where('kind', SupplierBillLine::KIND_GOODS_OUT)
+            ->whereIn('variant_id', $model->variants()->withTrashed()->select('id'))
+            ->where('is_consignment', false)
+            ->get()
+            ->each(fn (SupplierBillLine $line) => $line->update([
+                'supplier_id' => $model->supplier_id,
+                'unit_cost' => $model->supplier_id === null || $line->variant === null
+                    ? null
+                    : $this->purchasePrice($line->variant, $line->salesOrderItem?->salesOrder?->order_date ?? $line->billed_on),
+            ]));
     }
 
     /**
-     * Alokasikan baris "belum teralokasi" varian ke lot yang tersedia (FIFO, baris terlama dulu).
-     */
-    public function allocatePending(int $variantId): void
-    {
-        $pending = SupplierBillLine::query()
-            ->where('variant_id', $variantId)
-            ->whereNull('supplier_id')
-            ->whereNull('stock_lot_id')
-            ->where('qty', '>', 0)
-            ->lockForUpdate()
-            ->orderBy('billed_on')
-            ->orderBy('id')
-            ->get();
-
-        foreach ($pending as $line) {
-            foreach ($this->openLots($variantId) as $lot) {
-                $take = min($line->qty, $lot->qty_remaining);
-                $lot->decrement('qty_remaining', $take);
-
-                $unitCost = $lot->supplier_id === null ? null : $lot->unit_cost; // lot tunai: tanpa tagihan
-
-                if ($take === $line->qty) {
-                    $line->update(['supplier_id' => $lot->supplier_id, 'stock_lot_id' => $lot->id, 'unit_cost' => $unitCost]);
-
-                    continue 2;
-                }
-
-                SupplierBillLine::create([
-                    ...$line->only(['sales_order_item_id', 'variant_id', 'billed_on', 'is_consignment']),
-                    'supplier_id' => $lot->supplier_id,
-                    'stock_lot_id' => $lot->id,
-                    'unit_cost' => $unitCost,
-                    'qty' => $take,
-                ]);
-                $line->update(['qty' => $line->qty - $take]);
-            }
-
-            return; // lot habis: sisa tetap menunggu
-        }
-    }
-
-    /**
-     * Harga grosir bordir untuk total qty SKU dalam 1 pesanan: supplier = lot FIFO berikutnya (atau lot terakhir),
+     * Harga grosir bordir untuk total qty SKU dalam 1 pesanan: supplier Model Produk diutamakan,
      * tingkat harga = min. qty tertinggi yang terpenuhi, berlaku pada tanggal pesanan.
      *
      * @return array{supplier_id: int, unit_price: float, min_qty: int}|null
      */
     public function wholesaleFor(ProductVariant $variant, int $qty, CarbonInterface|string $date): ?array
     {
-        $date = Carbon::parse($date)->toDateString();
-        $supplierId = StockLot::query()->where('variant_id', $variant->id)->where('qty_remaining', '>', 0)->whereNotNull('supplier_id')->orderBy('received_at')->orderBy('id')->value('supplier_id')
-            ?? StockLot::query()->where('variant_id', $variant->id)->whereNotNull('supplier_id')->orderByDesc('received_at')->orderByDesc('id')->value('supplier_id')
-            ?? $variant->model?->supplier_id; // mode barang keluar: tanpa lot, pakai supplier Model Produk
-
         $price = SupplierWholesalePrice::query()
             ->where('model_id', $variant->model_id)
-            ->when($supplierId, fn ($query) => $query->where('supplier_id', $supplierId))
             ->where('min_qty', '<=', $qty)
-            ->whereDate('effective_from', '<=', $date)
+            ->whereDate('effective_from', '<=', Carbon::parse($date)->toDateString())
+            ->orderByRaw('supplier_id = ? DESC', [$variant->model?->supplier_id ?? 0])
             ->orderByDesc('min_qty')
             ->orderByDesc('effective_from')
             ->first();
@@ -349,83 +235,119 @@ class SupplierBilling
         return SupplierWholesalePrice::query()->where('model_id', $variant->model_id)->exists();
     }
 
+    // ---------------------------------------------------------------- hitung ulang
+
     /**
-     * Hitung ulang semua lot & tagihan dari awal (urut waktu): stok sebelum $from ikut dipakai FIFO,
-     * tetapi hanya pesanan mulai $from yang ditagihkan. $mode (opsional) mengganti mode tagihan sebelum dihitung;
-     * di mode barang keluar tidak ada lot: tiap pesanan ditagihkan ke supplier Model Produk.
-     * "unallocated" = pcs tanpa supplier (mode stok: stok minus; mode barang keluar: model belum diisi supplier).
+     * Hitung ulang dari awal: (1) alokasi stok vs dikirim supplier setiap penjualan beli jadi diulang urut tanggal
+     * (selisih stok dikoreksi lewat mutasi di kartu stok), (2) semua tagihan dibuat ulang. Pembayaran tidak berubah.
      *
-     * @return array{lots: int, lines: int, unallocated: int, no_price: int}
+     * @return array{lines: int, purchase: int, goods_out: int, corrected: int, no_supplier: int, no_price: int}
      */
-    public function rebuild(?string $from = null, ?string $mode = null): array
+    public function rebuild(?string $from = null): array
     {
         $from = Carbon::parse($from ?? $this->startDate())->toDateString();
         Setting::updateOrCreate(['key' => 'supplier_billing_start'], ['value' => $from]);
 
-        if ($mode !== null) {
-            Setting::updateOrCreate(['key' => 'supplier_billing_mode'], ['value' => $mode]);
-        }
-
         return DB::transaction(function (): array {
-            SupplierBillLine::query()->delete();
-            StockLot::query()->delete();
+            $corrected = $this->reallocate();
 
-            $events = collect();
+            SupplierBillLine::query()->delete();
+            StockLot::query()->delete(); // lot FIFO lama tidak dipakai lagi
 
             GoodsReceiptItem::query()->with('receipt')
                 ->whereHas('receipt', fn ($query) => $query->where('source', GoodsReceiptSource::BeliJadi))
-                ->whereNotNull('unit_cost')
                 ->get()
-                ->each(fn (GoodsReceiptItem $item) => $events->push([$item->receipt->received_at->toDateTimeString(), 0, $item->id, fn () => $this->receive($item)]));
+                ->each(fn (GoodsReceiptItem $item) => $this->purchased($item));
 
-            SalesOrderItem::query()->with('salesOrder')
+            SalesOrderItem::query()->with(['salesOrder', 'variant.model'])
+                ->where('dropship_qty', '>', 0)
                 ->whereHas('salesOrder', fn ($query) => $query->whereIn('status', [SalesOrderStatus::Completed, SalesOrderStatus::Returned]))
-                ->whereHas('variant.model', fn ($query) => $query->where('kind', 'beli_jadi'))
                 ->get()
-                ->each(fn (SalesOrderItem $item) => $events->push([$item->salesOrder->order_date->endOfDay()->toDateTimeString(), 1, $item->id, fn () => $this->bill($item)]));
-
-            SalesReturn::query()->where('restock', true)
-                ->whereHas('salesOrderItem.variant.model', fn ($query) => $query->where('kind', 'beli_jadi'))
-                ->get()
-                ->each(fn (SalesReturn $return) => $events->push([Carbon::parse($return->returned_at)->endOfDay()->toDateTimeString(), 2, $return->id, fn () => $this->returned($return)]));
-
-            $events->sortBy([[0, 'asc'], [1, 'asc'], [2, 'asc']])->each(fn (array $event) => $event[3]());
+                ->each(fn (SalesOrderItem $item) => $this->bill($item));
 
             return [
-                'lots' => StockLot::query()->count(),
                 'lines' => SupplierBillLine::query()->count(),
-                'unallocated' => (int) SupplierBillLine::query()->whereNull('supplier_id')->whereNull('stock_lot_id')->sum('qty'),
-                // Sudah ada supplier tapi harga beli belum ada pada tanggal pesanan (nilai tagihan kosong).
+                'purchase' => SupplierBillLine::query()->where('kind', SupplierBillLine::KIND_PURCHASE)->count(),
+                'goods_out' => SupplierBillLine::query()->where('kind', SupplierBillLine::KIND_GOODS_OUT)->count(),
+                'corrected' => $corrected,
+                'no_supplier' => (int) SupplierBillLine::query()->whereNull('supplier_id')->sum('qty'),
                 'no_price' => (int) SupplierBillLine::query()->whereNotNull('supplier_id')->whereNull('unit_cost')->sum('qty'),
             ];
         });
     }
 
     /**
-     * @return Collection<int, StockLot>
+     * Ulangi alokasi stok penjualan beli jadi urut tanggal (stok konveksi dulu, sisanya dikirim supplier) dan koreksi
+     * kartu stok bila mutasi penjualan yang tercatat berbeda. Mengembalikan jumlah baris yang dikoreksi.
      */
-    private function openLots(int $variantId): Collection
+    public function reallocate(): int
     {
-        return StockLot::query()
-            ->where('variant_id', $variantId)
-            ->where('qty_remaining', '>', 0)
-            ->lockForUpdate()
-            ->orderBy('received_at')
-            ->orderBy('id')
-            ->get();
-    }
+        $corrected = 0;
+        $morph = (new SalesOrderItem)->getMorphClass();
 
-    private function line(SalesOrderItem $item, CarbonInterface $date, int $qty, ?int $supplierId, ?float $unitCost, ?int $lotId): void
-    {
-        SupplierBillLine::create([
-            'sales_order_item_id' => $item->id,
-            'variant_id' => $item->variant_id,
-            'supplier_id' => $supplierId,
-            'stock_lot_id' => $lotId,
-            'billed_on' => $date,
-            'qty' => $qty,
-            'unit_cost' => $supplierId === null ? null : $unitCost, // tanpa supplier = belum teralokasi / lot tunai
-            'is_consignment' => $item->is_consignment,
-        ]);
+        $items = SalesOrderItem::query()
+            ->select('sales_order_items.*')
+            ->join('sales_orders', 'sales_orders.id', '=', 'sales_order_items.sales_order_id')
+            ->join('product_variants', 'product_variants.id', '=', 'sales_order_items.variant_id')
+            ->join('product_models', 'product_models.id', '=', 'product_variants.model_id')
+            ->where('product_models.kind', 'beli_jadi')
+            ->where('sales_orders.status', '!=', SalesOrderStatus::Cancelled)
+            ->with('salesOrder')
+            ->orderBy('sales_orders.order_date')
+            ->orderBy('sales_order_items.id')
+            ->get();
+
+        foreach ($items->groupBy(fn (SalesOrderItem $item): string => $item->variant_id.'|'.$item->salesOrder->warehouse_id) as $group) {
+            /** @var SalesOrderItem $first */
+            $first = $group->first();
+            $variantId = $first->variant_id;
+            $warehouseId = $first->salesOrder->warehouse_id;
+            $this->ledger->lockBalance('stock', $variantId, $warehouseId);
+
+            // Mutasi selain penjualan (barang masuk, retur, stok awal, penyesuaian, opname), urut waktu.
+            $others = StockMovement::query()
+                ->where('variant_id', $variantId)
+                ->where('warehouse_id', $warehouseId)
+                ->where(fn ($query) => $query->where('source_type', '!=', $morph)->orWhereNull('source_type'))
+                ->orderBy('moved_at')
+                ->orderBy('id')
+                ->get(['moved_at', 'qty']);
+            $posted = StockMovement::query()
+                ->where('source_type', $morph)
+                ->whereIn('source_id', $group->modelKeys())
+                ->selectRaw('source_id, SUM(qty) AS qty')
+                ->groupBy('source_id')
+                ->pluck('qty', 'source_id');
+
+            $balance = 0;
+            $cursor = 0;
+
+            foreach ($group as $item) {
+                $at = $item->salesOrder->order_date;
+
+                while ($cursor < $others->count() && $others[$cursor]->moved_at->lte($at)) {
+                    $balance += (int) $others[$cursor]->qty;
+                    $cursor++;
+                }
+
+                $fromStock = max(0, min($item->qty, $balance));
+                $balance -= $fromStock;
+                $diff = -$fromStock - (int) ($posted[$item->id] ?? 0);
+
+                if ($diff !== 0) {
+                    $this->ledger->moveStock(
+                        $variantId, $warehouseId, $diff, $diff < 0 ? StockMovementType::SaleOut : StockMovementType::SaleCancel,
+                        $item, $item->hpp_unit, 'Koreksi: bagian dikirim langsung supplier / diambil dari stok', $at,
+                    );
+                }
+
+                if ($diff !== 0 || $item->dropship_qty !== $item->qty - $fromStock) {
+                    $item->update(['dropship_qty' => $item->qty - $fromStock]);
+                    $corrected++;
+                }
+            }
+        }
+
+        return $corrected;
     }
 }

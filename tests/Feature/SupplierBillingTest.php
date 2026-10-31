@@ -1,7 +1,7 @@
 <?php
 
 use App\Enums\GoodsReceiptSource;
-use App\Exceptions\BusinessRuleException;
+use App\Enums\StockMovementType;
 use App\Filament\Pages\SupplierBills;
 use App\Models\Color;
 use App\Models\GoodsReceipt;
@@ -10,8 +10,6 @@ use App\Models\ProductModel;
 use App\Models\ProductVariant;
 use App\Models\ResellerPriceHistory;
 use App\Models\SalesOrderItem;
-use App\Models\Setting;
-use App\Models\StockLot;
 use App\Models\Supplier;
 use App\Models\SupplierBillLine;
 use App\Models\SupplierPayment;
@@ -23,6 +21,7 @@ use App\Services\InventoryService;
 use App\Services\PricingService;
 use App\Services\SalesOrderImporter;
 use App\Services\SalesOrderService;
+use App\Services\StockLedger;
 use App\Services\SupplierBilling;
 use App\Services\SupplierStatement;
 use Livewire\Livewire;
@@ -38,17 +37,26 @@ function supplierFixture(): array
     return [...$f, 'rmModel' => $model, 'rm' => $variant, 'rudi' => Supplier::create(['name' => 'Rudi']), 'andi' => Supplier::create(['name' => 'Andi']), 'rendi' => Supplier::create(['name' => 'Rendi'])];
 }
 
-/** @param array<string, mixed> $f */
-function receiveFrom(array $f, Supplier $supplier, int $qty, float $cost, string $date): void
+/** Pembelian beli jadi (Barang Masuk ber-supplier) + harga beli & harga reseller mulai tanggal itu. */
+function receiveFrom(array $f, ?Supplier $supplier, int $qty, float $cost, string $date): GoodsReceipt
 {
-    app(InventoryService::class)->createGoodsReceipt(
-        ['receipt_no' => 'BM-'.$supplier->name.'-'.$date, 'warehouse_id' => $f['warehouse']->id, 'received_at' => $date, 'source' => GoodsReceiptSource::BeliJadi, 'supplier_id' => $supplier->id],
+    $receipt = app(InventoryService::class)->createGoodsReceipt(
+        ['receipt_no' => 'BM-'.($supplier?->name ?? 'TUNAI').'-'.$date.'-'.$qty, 'warehouse_id' => $f['warehouse']->id, 'received_at' => $date, 'source' => GoodsReceiptSource::BeliJadi, 'supplier_id' => $supplier?->id],
         [['variant_id' => $f['rm']->id, 'qty' => $qty, 'unit_cost' => $cost]],
     );
     app(PricingService::class)->syncForReadyMade([$f['rm']->id], $date);
+
+    return $receipt;
 }
 
-/** @param array<string, mixed> $f */
+/** Harga beli (HPP tanpa packing) + harga reseller berlaku mulai $date, tanpa Barang Masuk. */
+function readyMadePriceFrom(array $f, float $purchase, string $date, ?ProductVariant $variant = null): void
+{
+    $variant ??= $f['rm'];
+    $cost = VariantCost::create(['variant_id' => $variant->id, 'effective_from' => $date, 'material_cost' => $purchase, 'labor_cost' => 3000, 'packing_cost' => 3000, 'source' => 'manual']);
+    ResellerPriceHistory::create(['variant_id' => $variant->id, 'effective_from' => $date, 'base_price' => $purchase + 10000, 'variant_cost_id' => $cost->id, 'source' => 'manual']);
+}
+
 function sellReadyMade(array $f, int $qty, string $date): SalesOrderItem
 {
     return app(SalesOrderService::class)->create(
@@ -58,56 +66,202 @@ function sellReadyMade(array $f, int $qty, string $date): SalesOrderItem
 }
 
 /** @return array<string, float> */
-function billsBySupplier(): array
+function billsBySupplier(?string $kind = null): array
 {
-    return SupplierBillLine::query()->whereNotNull('supplier_id')->with('supplier')->get()
+    return SupplierBillLine::query()->whereNotNull('supplier_id')->when($kind, fn ($query) => $query->where('kind', $kind))->with('supplier')->get()
         ->groupBy('supplier.name')->map(fn ($lines): float => (float) $lines->sum('amount'))->sortKeys()->all();
 }
 
-it('bills suppliers FIFO from the oldest lot when an order is completed', function () {
-    $f = supplierFixture();
-    receiveFrom($f, $f['rudi'], 3, 40000, '2026-08-01');
-    receiveFrom($f, $f['andi'], 50, 42000, '2026-08-02');
+function rmStock(array $f): int
+{
+    return app(StockLedger::class)->stockQty($f['rm']->id, $f['warehouse']->id);
+}
 
-    sellReadyMade($f, 5, '2026-08-03');
+// ---------------------------------------------------------------- pembelian & stok
 
-    expect(billsBySupplier())->toBe(['Andi' => 84000.0, 'Rudi' => 120000.0])
-        ->and(StockLot::query()->orderBy('id')->pluck('qty_remaining')->all())->toBe([0, 48]);
-});
-
-it('keeps negative stock unallocated until the next ready made receipt arrives', function () {
-    $f = supplierFixture();
-    receiveFrom($f, $f['rudi'], 1, 40000, '2026-08-01');
-
-    sellReadyMade($f, 4, '2026-08-03');
-    expect((int) SupplierBillLine::query()->whereNull('supplier_id')->sum('qty'))->toBe(3)
-        ->and(app(SupplierStatement::class)->unallocated()['qty'])->toBe(3);
-
-    receiveFrom($f, $f['andi'], 10, 42000, '2026-08-05');
-
-    expect(SupplierBillLine::query()->whereNull('supplier_id')->count())->toBe(0)
-        ->and(billsBySupplier())->toBe(['Andi' => 126000.0, 'Rudi' => 40000.0])
-        ->and(StockLot::query()->where('supplier_id', $f['andi']->id)->value('qty_remaining'))->toBe(7);
-});
-
-it('reduces the bill on restocked returns and removes it on cancellation', function () {
+it('bills the purchase when ready made goods are bought and sells them from stock without billing again', function () {
     $f = supplierFixture();
     receiveFrom($f, $f['rudi'], 10, 40000, '2026-08-01');
+
+    $item = sellReadyMade($f, 4, '2026-08-03');
+
+    expect(billsBySupplier(SupplierBillLine::KIND_PURCHASE))->toBe(['Rudi' => 400000.0])
+        ->and(billsBySupplier(SupplierBillLine::KIND_GOODS_OUT))->toBe([])
+        ->and($item->fresh()->dropship_qty)->toBe(0)
+        ->and(rmStock($f))->toBe(6);
+});
+
+it('ships the shortfall directly from the model supplier and bills it as goods out, never below zero stock', function () {
+    $f = supplierFixture();
+    $f['rmModel']->update(['supplier_id' => $f['andi']->id]);
+    receiveFrom($f, $f['rudi'], 3, 40000, '2026-08-01');
+
+    $item = sellReadyMade($f, 5, '2026-08-03');
+
+    expect($item->fresh()->dropship_qty)->toBe(2)
+        ->and(rmStock($f))->toBe(0)
+        ->and(billsBySupplier(SupplierBillLine::KIND_PURCHASE))->toBe(['Rudi' => 120000.0])
+        ->and(billsBySupplier(SupplierBillLine::KIND_GOODS_OUT))->toBe(['Andi' => 80000.0]);
+});
+
+it('treats every sale as sent by the supplier while there is no stock, at the purchase price of the order date', function () {
+    $f = supplierFixture();
+    $f['rmModel']->update(['supplier_id' => $f['rudi']->id]);
+    readyMadePriceFrom($f, 20000, '2026-08-01');
+    readyMadePriceFrom($f, 25000, '2026-09-01');
+
+    sellReadyMade($f, 3, '2026-08-10');
+    sellReadyMade($f, 2, '2026-09-05');
+
+    expect(billsBySupplier())->toBe(['Rudi' => 110000.0]) // 3 x 20.000 + 2 x 25.000, packing tidak ditagihkan
+        ->and(rmStock($f))->toBe(0);
+});
+
+it('puts returns into konveksi stock without reducing the supplier bill, and sells that stock next', function () {
+    $f = supplierFixture();
+    $f['rmModel']->update(['supplier_id' => $f['rudi']->id]);
+    readyMadePriceFrom($f, 20000, '2026-08-01');
     $item = sellReadyMade($f, 4, '2026-08-03');
 
     app(SalesOrderService::class)->registerReturn($item, ['returned_at' => '2026-08-04', 'qty' => 1, 'restock' => true, 'credit_reseller' => true, 'reason' => 'lainnya']);
-    expect(billsBySupplier())->toBe(['Rudi' => 120000.0])
-        ->and(StockLot::query()->value('qty_remaining'))->toBe(7);
+    expect(rmStock($f))->toBe(1)
+        ->and(billsBySupplier())->toBe(['Rudi' => 80000.0]);
 
-    $other = sellReadyMade($f, 2, '2026-08-05');
-    app(SalesOrderService::class)->cancel($other->salesOrder);
-    expect(billsBySupplier())->toBe(['Rudi' => 120000.0])
-        ->and(StockLot::query()->value('qty_remaining'))->toBe(7);
+    $next = sellReadyMade($f, 1, '2026-08-05');
+    expect($next->fresh()->dropship_qty)->toBe(0)
+        ->and(billsBySupplier())->toBe(['Rudi' => 80000.0]);
+});
+
+it('returns only the stock part on cancellation and removes the goods-out bill', function () {
+    $f = supplierFixture();
+    $f['rmModel']->update(['supplier_id' => $f['andi']->id]);
+    receiveFrom($f, $f['rudi'], 2, 40000, '2026-08-01');
+    $item = sellReadyMade($f, 5, '2026-08-03');
+
+    app(SalesOrderService::class)->cancel($item->salesOrder);
+
+    expect(rmStock($f))->toBe(2)
+        ->and(billsBySupplier())->toBe(['Rudi' => 80000.0]); // pembelian tetap, barang keluar hilang
+});
+
+it('does not let a backdated sale take stock already used by a later sale', function () {
+    $f = supplierFixture();
+    $f['rmModel']->update(['supplier_id' => $f['andi']->id]);
+    receiveFrom($f, $f['rudi'], 5, 40000, '2026-08-01');
+    sellReadyMade($f, 5, '2026-08-10');
+
+    $backdated = sellReadyMade($f, 2, '2026-08-05'); // diimpor belakangan
+
+    expect($backdated->fresh()->dropship_qty)->toBe(2)
+        ->and(rmStock($f))->toBe(0)
+        ->and(billsBySupplier(SupplierBillLine::KIND_GOODS_OUT))->toBe(['Andi' => 80000.0]);
+});
+
+it('waits for the model supplier, then moves the goods-out bill to it automatically', function () {
+    $f = supplierFixture();
+    readyMadePriceFrom($f, 20000, '2026-08-01');
+    sellReadyMade($f, 4, '2026-08-10');
+
+    expect(app(SupplierStatement::class)->unallocated()['qty'])->toBe(4)
+        ->and(billsBySupplier())->toBe([]);
+
+    $f['rmModel']->update(['supplier_id' => $f['andi']->id]);
+    expect(billsBySupplier())->toBe(['Andi' => 80000.0]);
+});
+
+it('moves the purchase bill when the supplier of a receipt is corrected, and drops it when qty becomes 0', function () {
+    $f = supplierFixture();
+    $receipt = receiveFrom($f, $f['rudi'], 10, 40000, '2026-08-01');
+
+    $receipt->update(['supplier_id' => $f['andi']->id]);
+    expect(billsBySupplier())->toBe(['Andi' => 400000.0]);
+
+    app(InventoryService::class)->zeroGoodsReceiptQty($receipt->fresh());
+    expect(billsBySupplier())->toBe([])
+        ->and(rmStock($f))->toBe(0);
+});
+
+it('buys from a cash receipt without billing anyone and bills only the shortfall', function () {
+    $f = supplierFixture();
+    $f['rmModel']->update(['supplier_id' => $f['rudi']->id]);
+    receiveFrom($f, null, 2, 40000, '2026-08-01'); // tunai
+
+    $item = sellReadyMade($f, 3, '2026-08-03');
+    expect(billsBySupplier())->toBe(['Rudi' => 40000.0]);
+
+    app(SalesOrderService::class)->cancel($item->salesOrder);
+    expect(rmStock($f))->toBe(2)
+        ->and(SupplierBillLine::query()->count())->toBe(0);
+});
+
+// ---------------------------------------------------------------- hitung ulang
+
+it('rebuilds old sales that drove stock negative into supplier shipments and recreates both bills', function () {
+    $f = supplierFixture();
+    $f['rmModel']->update(['supplier_id' => $f['rudi']->id]);
+    readyMadePriceFrom($f, 20000, '2026-08-01');
+    $item = sellReadyMade($f, 4, '2026-08-10');
+    // Data lama: penjualan dulu selalu mengurangi stok (sampai minus) dan tidak menyimpan dropship_qty.
+    app(StockLedger::class)->moveStock($f['rm']->id, $f['warehouse']->id, -4, StockMovementType::SaleOut, $item, 20000, movedAt: '2026-08-10');
+    $item->update(['dropship_qty' => 0]);
+    SupplierBillLine::query()->delete();
+    expect(rmStock($f))->toBe(-4);
+
+    $result = app(SupplierBilling::class)->rebuild('2026-08-01');
+
+    expect($result['corrected'])->toBe(1)
+        ->and(rmStock($f))->toBe(0)
+        ->and($item->fresh()->dropship_qty)->toBe(4)
+        ->and(billsBySupplier())->toBe(['Rudi' => 80000.0])
+        ->and(app(SupplierBilling::class)->rebuild('2026-08-01')['corrected'])->toBe(0); // aman diulang
+});
+
+it('rebuilds bills from August while earlier stock is still sold first', function () {
+    $f = supplierFixture();
+    receiveFrom($f, $f['rudi'], 5, 40000, '2026-07-01'); // sebelum mulai tagihan
+    sellReadyMade($f, 2, '2026-08-02');
+    receiveFrom($f, $f['andi'], 10, 42000, '2026-08-03');
+    SupplierBillLine::query()->delete();
+
+    $result = app(SupplierBilling::class)->rebuild('2026-08-01');
+
+    expect($result['purchase'])->toBe(1)
+        ->and(billsBySupplier())->toBe(['Andi' => 420000.0]);
+});
+
+// ---------------------------------------------------------------- ringkasan & titipan grosir
+
+it('shows the supplier statement per period with tabs and reduces it by payments', function () {
+    $f = supplierFixture();
+    receiveFrom($f, $f['rudi'], 10, 40000, '2026-08-01');
+    sellReadyMade($f, 4, '2026-08-03');
+    SupplierPayment::create(['supplier_id' => $f['rudi']->id, 'paid_at' => '2026-08-10', 'amount' => 100000]);
+    $admin = User::factory()->create(['is_active' => true]);
+    $admin->assignRole(Role::findOrCreate('admin', 'web'));
+    $this->actingAs($admin);
+
+    expect(app(SupplierStatement::class)->balance($f['rudi']))->toBe(300000.0);
+
+    $this->get('/administrator/tagihan-supplier')->assertOk()->assertSee('Tagihan Pembelian')->assertSee('Tagihan Barang Keluar');
+    Livewire::test(SupplierBills::class)
+        ->set('tableFilters.period.from', '2026-08-01')
+        ->set('tableFilters.period.until', '2026-08-31')
+        ->assertCanSeeTableRecords([$f['rudi']])
+        ->assertTableColumnStateSet('billed_purchase', 400000, $f['rudi'])
+        ->assertTableColumnStateSet('closing_balance', 300000.0, $f['rudi'])
+        ->assertCanNotSeeTableRecords([$f['andi']])
+        ->set('activeTab', SupplierBillLine::KIND_PURCHASE)
+        ->assertTableColumnStateSet('qty_purchased', 10, $f['rudi']);
+
+    $this->get('/administrator/tagihan-supplier/rincian')->assertOk();
+    $this->get('/administrator/pembayaran-supplier')->assertOk();
+    $this->get('/administrator/harga-grosir-bordir')->assertOk();
 });
 
 it('prices embroidery rows at the wholesale tier automatically once QTY reaches 10 or 20', function () {
     $f = supplierFixture();
-    receiveFrom($f, $f['rendi'], 100, 15000, '2026-08-01');
+    $f['rmModel']->update(['supplier_id' => $f['rendi']->id]);
+    readyMadePriceFrom($f, 15000, '2026-08-01'); // stok 0: semua dikirim langsung supplier
     SupplierWholesalePrice::create(['supplier_id' => $f['rendi']->id, 'model_id' => $f['rmModel']->id, 'min_qty' => 10, 'unit_price' => 13000, 'effective_from' => '2026-08-01']);
     SupplierWholesalePrice::create(['supplier_id' => $f['rendi']->id, 'model_id' => $f['rmModel']->id, 'min_qty' => 20, 'unit_price' => 12000, 'effective_from' => '2026-08-01']);
     $import = function (string $csv) use ($f): array {
@@ -132,7 +286,7 @@ it('prices embroidery rows at the wholesale tier automatically once QTY reaches 
         ->toBe([[25, true, 12000.0], [12, true, 13000.0], [8, false, $normalPrice]])
         ->and((float) SupplierBillLine::query()->where('is_consignment', true)->sum('amount'))->toBe(25 * 12000.0 + 12 * 13000.0)
         ->and((float) SupplierBillLine::query()->where('is_consignment', false)->sum('amount'))->toBe(8 * 15000.0)
-        ->and(StockLot::query()->value('qty_remaining'))->toBe(55);
+        ->and(rmStock($f))->toBe(0);
 
     // Laba konveksi tidak menghitung titipan grosir.
     $month = KonveksiMonthlyProfit::query()->whereDate('month', '2026-08-01')->first();
@@ -148,18 +302,16 @@ it('prices embroidery rows at the wholesale tier automatically once QTY reaches 
     expect($items->map(fn (SalesOrderItem $item): array => [$item->qty, $item->is_consignment, (float) $item->reseller_unit_price])->all())
         ->toBe([[5, false, $normalPrice], [12, true, 13000.0], [10, true, 13000.0]])
         ->and((float) SupplierBillLine::query()->where('is_consignment', true)->sum('amount'))->toBe(22 * 13000.0)
-        ->and(StockLot::query()->value('qty_remaining'))->toBe(73);
+        ->and($items->pluck('dropship_qty')->all())->toBe([5, 12, 10])
+        ->and(rmStock($f))->toBe(0);
 });
 
 it('counts the wholesale embroidery quantity per SKU per order, never across colours or sizes', function () {
     $f = supplierFixture();
+    $f['rmModel']->update(['supplier_id' => $f['rendi']->id]);
     $white = ProductVariant::create(['model_id' => $f['rmModel']->id, 'color_id' => Color::create(['code' => 'PT', 'name' => 'Putih'])->id, 'sku' => 'VK-Putih', 'name' => 'Peci Velkro Putih', 'is_active' => true]);
-    receiveFrom($f, $f['rendi'], 100, 15000, '2026-08-01');
-    app(InventoryService::class)->createGoodsReceipt(
-        ['receipt_no' => 'BM-PUTIH', 'warehouse_id' => $f['warehouse']->id, 'received_at' => '2026-08-01', 'source' => GoodsReceiptSource::BeliJadi, 'supplier_id' => $f['rendi']->id],
-        [['variant_id' => $white->id, 'qty' => 100, 'unit_cost' => 15000]],
-    );
-    app(PricingService::class)->syncForReadyMade([$white->id], '2026-08-01');
+    readyMadePriceFrom($f, 15000, '2026-08-01');
+    readyMadePriceFrom($f, 15000, '2026-08-01', $white);
     SupplierWholesalePrice::create(['supplier_id' => $f['rendi']->id, 'model_id' => $f['rmModel']->id, 'min_qty' => 10, 'unit_price' => 13000, 'effective_from' => '2026-08-01']);
     SupplierWholesalePrice::create(['supplier_id' => $f['rendi']->id, 'model_id' => $f['rmModel']->id, 'min_qty' => 20, 'unit_price' => 12000, 'effective_from' => '2026-08-01']);
     $import = function (string $rows) use ($f): array {
@@ -201,87 +353,10 @@ it('counts the wholesale embroidery quantity per SKU per order, never across col
     expect(array_slice($lines(), -2))->toBe(['P4 VK-Putih 15 grosir 12000', 'P4 VK-Putih 10 grosir 12000']);
 });
 
-it('rebuilds bills from August while earlier sales still consume older lots', function () {
-    $f = supplierFixture();
-    receiveFrom($f, $f['rudi'], 5, 40000, '2026-07-01');
-    receiveFrom($f, $f['andi'], 10, 42000, '2026-07-15');
-    sellReadyMade($f, 5, '2026-07-20');
-    sellReadyMade($f, 2, '2026-08-02');
-    SupplierBillLine::query()->delete();
-
-    $result = app(SupplierBilling::class)->rebuild('2026-08-01');
-
-    expect($result['lots'])->toBe(2)
-        ->and(billsBySupplier())->toBe(['Andi' => 84000.0]);
-});
-
-it('shows the supplier statement per period and reduces it by payments', function () {
-    $f = supplierFixture();
-    receiveFrom($f, $f['rudi'], 10, 40000, '2026-08-01');
-    sellReadyMade($f, 4, '2026-08-03');
-    SupplierPayment::create(['supplier_id' => $f['rudi']->id, 'paid_at' => '2026-08-10', 'amount' => 100000]);
-    $admin = User::factory()->create(['is_active' => true]);
-    $admin->assignRole(Role::findOrCreate('admin', 'web'));
-    $this->actingAs($admin);
-
-    expect(app(SupplierStatement::class)->balance($f['rudi']))->toBe(60000.0);
-
-    $this->get('/administrator/tagihan-supplier')->assertOk()->assertSee('Tagihan Supplier');
-    Livewire::test(SupplierBills::class)
-        ->set('tableFilters.period.from', '2026-08-01')
-        ->set('tableFilters.period.until', '2026-08-31')
-        ->assertCanSeeTableRecords([$f['rudi']])
-        ->assertTableColumnStateSet('billed_normal', 160000, $f['rudi'])
-        ->assertTableColumnStateSet('closing_balance', 60000.0, $f['rudi'])
-        ->assertCanNotSeeTableRecords([$f['andi']]);
-
-    $this->get('/administrator/tagihan-supplier/rincian')->assertOk();
-    $this->get('/administrator/pembayaran-supplier')->assertOk();
-    $this->get('/administrator/harga-grosir-bordir')->assertOk();
-});
-
-it('uses ready made lots without a supplier FIFO without billing anyone and restores them on cancel', function () {
-    $f = supplierFixture();
-    app(InventoryService::class)->createGoodsReceipt(
-        ['receipt_no' => 'BM-TUNAI', 'warehouse_id' => $f['warehouse']->id, 'received_at' => '2026-08-01', 'source' => GoodsReceiptSource::BeliJadi],
-        [['variant_id' => $f['rm']->id, 'qty' => 2, 'unit_cost' => 40000]],
-    );
-    receiveFrom($f, $f['rudi'], 10, 41000, '2026-08-02');
-
-    $item = sellReadyMade($f, 3, '2026-08-03');
-    expect(billsBySupplier())->toBe(['Rudi' => 41000.0])
-        ->and(app(SupplierStatement::class)->unallocated()['qty'])->toBe(0);
-
-    app(SalesOrderService::class)->cancel($item->salesOrder);
-    expect(StockLot::query()->orderBy('id')->pluck('qty_remaining')->all())->toBe([2, 10])
-        ->and(SupplierBillLine::query()->count())->toBe(0);
-});
-
-it('moves lots and their bills when the supplier of a ready made receipt is corrected', function () {
-    $f = supplierFixture();
-    receiveFrom($f, $f['rudi'], 10, 40000, '2026-08-01');
-    sellReadyMade($f, 2, '2026-08-03');
-
-    GoodsReceipt::query()->first()->update(['supplier_id' => $f['andi']->id]);
-
-    expect(billsBySupplier())->toBe(['Andi' => 80000.0])
-        ->and(StockLot::query()->value('supplier_id'))->toBe($f['andi']->id);
-});
-
-it('records packing edited from the variant form as dated history once dated packing exists', function () {
-    $f = supplierFixture();
-    receiveFrom($f, $f['rudi'], 10, 40000, '2026-08-01');
-    app(PricingService::class)->changePrice($f['rm'], ['packing_cost' => 1000], '2026-08-01');
-
-    $f['rm']->refresh()->update(['packing_cost' => 2500]);
-
-    expect(app(CostingService::class)->packingCostFor($f['rm'], today()))->toBe(2500.0)
-        ->and(app(CostingService::class)->packingCostFor($f['rm'], '2026-08-02'))->toBe(1000.0);
-});
-
 it('keeps billing the supplier for damaged or lost returns, wholesale consignment included', function () {
     $f = supplierFixture();
-    receiveFrom($f, $f['rendi'], 50, 15000, '2026-08-01');
+    $f['rmModel']->update(['supplier_id' => $f['rendi']->id]);
+    readyMadePriceFrom($f, 15000, '2026-08-01');
     SupplierWholesalePrice::create(['supplier_id' => $f['rendi']->id, 'model_id' => $f['rmModel']->id, 'min_qty' => 10, 'unit_price' => 13000, 'effective_from' => '2026-08-01']);
     $item = app(SalesOrderService::class)->create(
         ['store_id' => $f['store']->id, 'warehouse_id' => $f['warehouse']->id, 'order_date' => '2026-08-03'],
@@ -294,69 +369,16 @@ it('keeps billing the supplier for damaged or lost returns, wholesale consignmen
 
     // Barang rusak/hilang tetap ditagih: titipan 12 x 13.000 + normal 2 x 15.000.
     expect(billsBySupplier())->toBe(['Rendi' => 156000.0 + 30000.0])
-        ->and(StockLot::query()->value('qty_remaining'))->toBe(36);
+        ->and(rmStock($f))->toBe(0);
 });
 
-// ---------------------------------------------------------------- mode berdasarkan barang keluar (tanpa stok)
-
-/**
- * Harga beli (HPP beli jadi tanpa packing) + harga reseller berlaku mulai $date, tanpa Barang Masuk.
- *
- * @param  array<string, mixed>  $f
- */
-function readyMadePriceFrom(array $f, float $purchase, string $date): void
-{
-    $cost = VariantCost::create(['variant_id' => $f['rm']->id, 'effective_from' => $date, 'material_cost' => $purchase, 'labor_cost' => 3000, 'packing_cost' => 3000, 'source' => 'manual']);
-    ResellerPriceHistory::create(['variant_id' => $f['rm']->id, 'effective_from' => $date, 'base_price' => $purchase + 10000, 'variant_cost_id' => $cost->id, 'source' => 'manual']);
-}
-
-function billBySales(): void
-{
-    Setting::updateOrCreate(['key' => 'supplier_billing_mode'], ['value' => SupplierBilling::MODE_SALES]);
-}
-
-it('bills goods out to the model supplier at the purchase price of the order date, without any stock', function () {
+it('records packing edited from the variant form as dated history once dated packing exists', function () {
     $f = supplierFixture();
-    billBySales();
-    $f['rmModel']->update(['supplier_id' => $f['rudi']->id]);
-    readyMadePriceFrom($f, 20000, '2026-08-01');
-    readyMadePriceFrom($f, 25000, '2026-09-01');
+    receiveFrom($f, $f['rudi'], 10, 40000, '2026-08-01');
+    app(PricingService::class)->changePrice($f['rm'], ['packing_cost' => 1000], '2026-08-01');
 
-    sellReadyMade($f, 3, '2026-08-10');
-    sellReadyMade($f, 2, '2026-09-05');
+    $f['rm']->refresh()->update(['packing_cost' => 2500]);
 
-    expect(billsBySupplier())->toBe(['Rudi' => 110000.0]) // 3 x 20.000 + 2 x 25.000, packing tidak ditagihkan
-        ->and(StockLot::query()->count())->toBe(0);
-});
-
-it('waits for the model supplier, then moves the goods-out bill to it automatically', function () {
-    $f = supplierFixture();
-    billBySales();
-    readyMadePriceFrom($f, 20000, '2026-08-01');
-    $item = sellReadyMade($f, 4, '2026-08-10');
-
-    expect(app(SupplierStatement::class)->unallocated()['qty'])->toBe(4)
-        ->and(billsBySupplier())->toBe([]);
-
-    $f['rmModel']->update(['supplier_id' => $f['andi']->id]);
-    expect(billsBySupplier())->toBe(['Andi' => 80000.0]);
-
-    app(SalesOrderService::class)->cancel($item->salesOrder);
-    expect(SupplierBillLine::query()->count())->toBe(0);
-});
-
-it('switches to goods-out billing on rebuild and rejects an unknown mode', function () {
-    $f = supplierFixture();
-    $f['rmModel']->update(['supplier_id' => $f['rudi']->id]);
-    readyMadePriceFrom($f, 20000, '2026-08-01');
-    sellReadyMade($f, 2, '2026-08-10'); // mode stok: tanpa lot = belum teralokasi
-
-    expect(billsBySupplier())->toBe([]);
-
-    $result = app(SupplierBilling::class)->rebuild('2026-08-01', SupplierBilling::MODE_SALES);
-
-    expect($result['lines'])->toBe(1)
-        ->and($result['unallocated'])->toBe(0)
-        ->and(billsBySupplier())->toBe(['Rudi' => 40000.0])
-        ->and(fn () => Setting::updateOrCreate(['key' => 'supplier_billing_mode'], ['value' => 'apa']))->toThrow(BusinessRuleException::class);
+    expect(app(CostingService::class)->packingCostFor($f['rm'], today()))->toBe(2500.0)
+        ->and(app(CostingService::class)->packingCostFor($f['rm'], '2026-08-02'))->toBe(1000.0);
 });

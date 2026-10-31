@@ -7,13 +7,27 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
- * Baris tagihan supplier: qty pesanan Selesai yang diambil dari lot supplier (FIFO).
- * supplier_id NULL = belum teralokasi (stok minus); qty negatif = pengurang dari retur yang kembali ke stok.
- * is_consignment = titipan grosir bordir (diteruskan utuh ke supplier).
+ * Baris tagihan supplier beli jadi:
+ *  - kind "pembelian": Barang Masuk Beli Jadi ber-supplier (stok masuk konveksi), dari goods_receipt_item;
+ *  - kind "barang_keluar": qty pesanan Selesai yang dikirim langsung supplier karena stok konveksi tidak cukup.
+ * supplier_id NULL = Model Produk belum punya supplier. is_consignment = titipan grosir bordir (harga grosir).
  */
-#[Fillable(['sales_order_item_id', 'variant_id', 'supplier_id', 'stock_lot_id', 'sales_return_id', 'billed_on', 'qty', 'unit_cost', 'is_consignment'])]
+#[Fillable(['kind', 'sales_order_item_id', 'goods_receipt_item_id', 'variant_id', 'supplier_id', 'stock_lot_id', 'sales_return_id', 'billed_on', 'qty', 'unit_cost', 'is_consignment'])]
 class SupplierBillLine extends Model
 {
+    public const KIND_PURCHASE = 'pembelian';
+
+    public const KIND_GOODS_OUT = 'barang_keluar';
+
+    public const KINDS = [
+        self::KIND_PURCHASE => 'Tagihan Pembelian',
+        self::KIND_GOODS_OUT => 'Tagihan Barang Keluar',
+    ];
+
+    protected $attributes = [
+        'kind' => self::KIND_GOODS_OUT,
+    ];
+
     protected function casts(): array
     {
         return [
@@ -29,6 +43,12 @@ class SupplierBillLine extends Model
     public function salesOrderItem(): BelongsTo
     {
         return $this->belongsTo(SalesOrderItem::class);
+    }
+
+    /** @return BelongsTo<GoodsReceiptItem, $this> */
+    public function goodsReceiptItem(): BelongsTo
+    {
+        return $this->belongsTo(GoodsReceiptItem::class);
     }
 
     /** @return BelongsTo<ProductVariant, $this> */

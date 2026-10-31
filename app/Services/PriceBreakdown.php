@@ -5,12 +5,12 @@ namespace App\Services;
 use App\Enums\BomLineType;
 use App\Enums\GoodsReceiptSource;
 use App\Exceptions\BusinessRuleException;
+use App\Models\GoodsReceipt;
 use App\Models\GoodsReceiptItem;
 use App\Models\PriceTier;
 use App\Models\ProductVariant;
 use App\Models\ResellerPriceHistory;
 use App\Models\Setting;
-use App\Models\StockLot;
 use App\Models\SupplierWholesalePrice;
 use App\Models\VariantCost;
 use Illuminate\Support\Collection;
@@ -122,7 +122,7 @@ class PriceBreakdown
     }
 
     /**
-     * Supplier beli jadi: lot FIFO berikutnya (masih ada sisa), selain itu lot terakhir.
+     * Supplier beli jadi: supplier Model Produk (penerima tagihan barang keluar), selain itu supplier pembelian terakhir.
      */
     public function supplierName(ProductVariant $variant): ?string
     {
@@ -130,13 +130,11 @@ class PriceBreakdown
             return null;
         }
 
-        $lot = StockLot::query()->with('supplier')->where('variant_id', $variant->id)->whereNotNull('supplier_id')
-            ->orderByRaw('qty_remaining > 0 DESC')
-            ->orderByRaw('CASE WHEN qty_remaining > 0 THEN received_at END ASC')
-            ->orderByDesc('received_at')
-            ->first();
-
-        return $lot?->supplier?->name;
+        return $variant->model?->supplier?->name
+            ?? GoodsReceipt::query()->with('supplier')->whereNotNull('supplier_id')
+                ->whereHas('items', fn ($query) => $query->where('variant_id', $variant->id))
+                ->orderByDesc('received_at')
+                ->first()?->supplier?->name;
     }
 
     /**

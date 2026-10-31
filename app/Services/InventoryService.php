@@ -10,7 +10,6 @@ use App\Models\GoodsReceipt;
 use App\Models\MaterialPurchase;
 use App\Models\StockAdjustment;
 use App\Models\StockBalance;
-use App\Models\StockLot;
 use App\Models\StockOpname;
 use Illuminate\Support\Facades\DB;
 
@@ -71,8 +70,8 @@ class InventoryService
                     $item, $item->unit_cost, movedAt: $receipt->received_at,
                 );
 
-                // Beli jadi: 1 baris = 1 lot FIFO untuk tagihan supplier.
-                app(SupplierBilling::class)->receive($item->setRelation('receipt', $receipt));
+                // Beli jadi ber-supplier: Tagihan Pembelian (barang sudah dibeli, penjualannya tidak ditagih lagi).
+                app(SupplierBilling::class)->purchased($item->setRelation('receipt', $receipt));
             }
 
             return $receipt;
@@ -81,8 +80,7 @@ class InventoryService
 
     /**
      * Ubah qty barang masuk menjadi 0 (harga beli tetap tercatat): stok yang pernah ditambahkan dibatalkan lewat mutasi
-     * pembalik di kartu stok (append-only), bertanggal sama dengan barang masuk. Lot FIFO ikut dibatalkan
-     * (mode stok: tagihan supplier dihitung ulang).
+     * pembalik di kartu stok (append-only), bertanggal sama dengan barang masuk. Tagihan Pembelian dokumen ini dihapus.
      *
      * @return int jumlah baris yang diubah
      */
@@ -99,11 +97,7 @@ class InventoryService
                 $item->update(['qty' => 0]);
             }
 
-            $hadLots = StockLot::query()->whereIn('goods_receipt_item_id', $items->modelKeys())->exists();
-
-            if ($hadLots) {
-                app(SupplierBilling::class)->rebuild();
-            }
+            app(SupplierBilling::class)->changeReceiptSupplier($receipt);
 
             return $items->count();
         });

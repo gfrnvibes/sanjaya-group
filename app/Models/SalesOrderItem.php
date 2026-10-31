@@ -16,7 +16,7 @@ use Illuminate\Database\Eloquent\Relations\MorphMany;
  */
 #[WithoutTimestamps]
 #[Fillable([
-    'sales_order_id', 'variant_id', 'sku_raw', 'qty', 'revenue',
+    'sales_order_id', 'variant_id', 'sku_raw', 'qty', 'dropship_qty', 'revenue',
     'reseller_price_id', 'tier_adjustment_pct', 'reseller_unit_price', 'hpp_unit',
     'reseller_invoice_id', 'is_consignment',
 ])]
@@ -34,6 +34,7 @@ class SalesOrderItem extends Model
     {
         return [
             'qty' => 'integer',
+            'dropship_qty' => 'integer', // beli jadi: qty dikirim langsung supplier (tanpa stok)
             'revenue' => 'decimal:2',
             'tier_adjustment_pct' => 'decimal:4',
             'reseller_unit_price' => 'decimal:2',
@@ -42,6 +43,12 @@ class SalesOrderItem extends Model
             'margin' => 'decimal:2',
             'is_consignment' => 'boolean',
         ];
+    }
+
+    /** Qty yang diambil dari stok konveksi (sisanya dikirim langsung supplier). */
+    public function stockQty(): int
+    {
+        return $this->qty - (int) $this->dropship_qty;
     }
 
     /** @return HasMany<SupplierBillLine, $this> */

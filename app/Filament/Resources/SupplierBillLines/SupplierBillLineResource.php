@@ -63,7 +63,7 @@ class SupplierBillLineResource extends Resource
     public static function table(Table $table): Table
     {
         return $table
-            ->modifyQueryUsing(fn (Builder $query) => $query->with(['supplier', 'variant', 'lot.receiptItem.receipt', 'salesOrderItem.salesOrder.store', 'salesReturn']))
+            ->modifyQueryUsing(fn (Builder $query) => $query->with(['supplier', 'variant', 'goodsReceiptItem.receipt', 'salesOrderItem.salesOrder.store', 'salesReturn']))
             ->defaultSort('billed_on', 'desc')
             ->columns([
                 TextColumn::make('billed_on')
@@ -72,12 +72,17 @@ class SupplierBillLineResource extends Resource
                     ->sortable(),
                 TextColumn::make('supplier.name')
                     ->label('Supplier')
-                    ->placeholder(fn (SupplierBillLine $record): string => $record->stock_lot_id === null ? 'Belum teralokasi' : 'Tanpa supplier (tunai)')
+                    ->placeholder('Belum ada supplier (isi di Model Produk)')
                     ->searchable(),
-                TextColumn::make('salesOrderItem.salesOrder.order_no')
-                    ->label('No. pesanan')
-                    ->description(fn (SupplierBillLine $record): ?string => $record->salesOrderItem?->salesOrder?->store?->name)
-                    ->searchable(),
+                TextColumn::make('document')
+                    ->label('Dokumen')
+                    ->state(fn (SupplierBillLine $record): ?string => $record->kind === SupplierBillLine::KIND_PURCHASE
+                        ? $record->goodsReceiptItem?->receipt?->receipt_no
+                        : $record->salesOrderItem?->salesOrder?->order_no)
+                    ->description(fn (SupplierBillLine $record): ?string => $record->kind === SupplierBillLine::KIND_PURCHASE
+                        ? 'Barang Masuk'
+                        : $record->salesOrderItem?->salesOrder?->store?->name)
+                    ->placeholder('-'),
                 TextColumn::make('variant.sku')
                     ->label('SKU')
                     ->description(fn (SupplierBillLine $record): ?string => $record->variant?->name)
@@ -85,25 +90,18 @@ class SupplierBillLineResource extends Resource
                 TextColumn::make('kind')
                     ->label('Jenis')
                     ->state(fn (SupplierBillLine $record): string => match (true) {
-                        $record->sales_return_id !== null => 'Retur',
-                        $record->supplier_id === null && $record->stock_lot_id === null => 'Belum teralokasi',
-                        $record->supplier_id === null => 'Lot tunai',
+                        $record->kind === SupplierBillLine::KIND_PURCHASE => 'Pembelian',
+                        $record->supplier_id === null => 'Belum ada supplier',
                         $record->is_consignment => 'Titipan grosir',
-                        default => 'Barang',
+                        default => 'Dikirim supplier',
                     })
                     ->badge()
                     ->color(fn (string $state): string => match ($state) {
-                        'Retur' => 'warning',
-                        'Belum teralokasi' => 'danger',
+                        'Pembelian' => 'success',
+                        'Belum ada supplier' => 'danger',
                         'Titipan grosir' => 'info',
                         default => 'gray',
                     }),
-                TextColumn::make('lot')
-                    ->label('Lot / Barang Masuk')
-                    ->state(fn (SupplierBillLine $record): ?string => $record->lot?->receiptItem?->receipt?->receipt_no)
-                    ->description(fn (SupplierBillLine $record): ?string => $record->lot?->received_at?->format('d/m/Y'))
-                    ->placeholder('-')
-                    ->toggleable(),
                 TextColumn::make('qty')
                     ->label('Qty')
                     ->numeric()
@@ -122,6 +120,9 @@ class SupplierBillLineResource extends Resource
                     ->summarize(Sum::make()->money('IDR', decimalPlaces: 0)->label('Total')),
             ])
             ->filters([
+                SelectFilter::make('kind')
+                    ->label('Jenis tagihan')
+                    ->options(SupplierBillLine::KINDS),
                 SelectFilter::make('supplier_id')
                     ->label('Supplier')
                     ->relationship('supplier', 'name')
@@ -145,12 +146,12 @@ class SupplierBillLineResource extends Resource
                     ->trueLabel('Hanya titipan grosir')
                     ->falseLabel('Tanpa titipan grosir'),
                 TernaryFilter::make('allocated')
-                    ->label('Alokasi')
-                    ->trueLabel('Sudah teralokasi')
-                    ->falseLabel('Belum teralokasi')
+                    ->label('Supplier')
+                    ->trueLabel('Sudah ada supplier')
+                    ->falseLabel('Belum ada supplier')
                     ->queries(
-                        true: fn (Builder $query) => $query->where(fn (Builder $query) => $query->whereNotNull('stock_lot_id')->orWhereNotNull('supplier_id')),
-                        false: fn (Builder $query) => $query->whereNull('supplier_id')->whereNull('stock_lot_id'),
+                        true: fn (Builder $query) => $query->whereNotNull('supplier_id'),
+                        false: fn (Builder $query) => $query->whereNull('supplier_id'),
                     ),
             ]);
     }

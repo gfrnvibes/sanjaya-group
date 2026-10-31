@@ -68,13 +68,8 @@ class SalesOrderService
                     ...$snapshot,
                 ]);
 
-                if ($order->status !== SalesOrderStatus::Cancelled) {
-                    $this->ledger->moveStock(
-                        $item->variant_id, $order->warehouse_id, -$item->qty, StockMovementType::SaleOut,
-                        $item, $item->hpp_unit, movedAt: $order->order_date,
-                    );
-                }
-
+                // Beli jadi: stok konveksi dulu, kekurangannya dikirim langsung supplier (tanpa mutasi stok).
+                $this->supplierBilling->shipFromStock($item);
                 $this->supplierBilling->bill($item);
             }
 
@@ -107,10 +102,8 @@ class SalesOrderService
             }
 
             foreach ($order->items as $item) {
-                $this->ledger->moveStock(
-                    $item->variant_id, $order->warehouse_id, $item->qty, StockMovementType::SaleCancel,
-                    $item, $item->hpp_unit,
-                );
+                // Hanya bagian yang dulu diambil dari stok yang kembali ke stok (bagian dikirim supplier tidak).
+                $this->supplierBilling->returnToStock($item->setRelation('salesOrder', $order), 'Batal jual');
                 $item->update(['reseller_invoice_id' => null]);
                 $this->supplierBilling->reverse($item);
             }
@@ -147,10 +140,18 @@ class SalesOrderService
                 throw new BusinessRuleException('Pesanan batal, sudah ditagih, atau sudah diretur tidak bisa dikoreksi lewat impor.');
             }
             $delta = $qty - $item->qty;
-            if ($delta !== 0) {
-                $this->ledger->moveStock($item->variant_id, $order->warehouse_id, -$delta, StockMovementType::Adjustment, $item, $item->hpp_unit, 'Koreksi jumlah impor', $order->order_date);
+            $item->setRelation('salesOrder', $order);
+            if ($delta !== 0 && $item->variant()->first()?->isReadyMade()) {
+                // Beli jadi: lepas stok lama lalu alokasikan ulang (stok dulu, sisanya dikirim supplier).
+                $this->supplierBilling->returnToStock($item, 'Koreksi jumlah impor');
+                $item->update(['qty' => $qty, 'dropship_qty' => 0, 'revenue' => $revenue]);
+                $this->supplierBilling->shipFromStock($item);
+            } else {
+                if ($delta !== 0) {
+                    $this->ledger->moveStock($item->variant_id, $order->warehouse_id, -$delta, StockMovementType::Adjustment, $item, $item->hpp_unit, 'Koreksi jumlah impor', $order->order_date);
+                }
+                $item->update(['qty' => $qty, 'revenue' => $revenue]);
             }
-            $item->update(['qty' => $qty, 'revenue' => $revenue]);
 
             $repriced = $item->is_consignment !== ($consignmentPrice !== null)
                 || ($consignmentPrice !== null && round((float) $item->reseller_unit_price, 2) !== round($consignmentPrice, 2));
@@ -216,7 +217,7 @@ class SalesOrderService
                 );
             }
 
-            $this->supplierBilling->returned($return);
+            // Retur (termasuk barang yang dulu dikirim langsung supplier) masuk stok konveksi; tagihan supplier tidak berubah.
 
             $fullyReturned = $order->items()->get()->every(fn (SalesOrderItem $line): bool => $this->returnableQty($line) === 0);
 

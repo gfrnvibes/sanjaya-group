@@ -12,6 +12,7 @@ use App\Models\StockMovement;
 use App\Models\Warehouse;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -119,6 +120,32 @@ class StockLedger
         if ($model::query()->where($field, $itemId)->where('warehouse_id', $warehouseId)->where('movement_type', 'opname')->where('moved_at', $inclusive ? '>=' : '>', $at)->exists()) {
             throw new BusinessRuleException('Sudah ada opname pada/setelah waktu tersebut. Gunakan waktu koreksi setelah opname terakhir.');
         }
+    }
+
+    /**
+     * Stok konveksi yang boleh dipakai pesanan bertanggal $at tanpa membuat saldo minus di tanggal mana pun sesudahnya
+     * (pesanan yang diimpor belakangan tidak "memakan" stok yang sudah terpakai penjualan setelahnya). Minimal 0.
+     */
+    public function availableStockAt(int $variantId, int $warehouseId, CarbonInterface|string $at): int
+    {
+        $at = Carbon::parse($at);
+        $running = $this->stockQtyAt($variantId, $warehouseId, $at);
+        $lowest = $running;
+
+        $later = StockMovement::query()
+            ->where('variant_id', $variantId)
+            ->where('warehouse_id', $warehouseId)
+            ->where('moved_at', '>', $at)
+            ->orderBy('moved_at')
+            ->orderBy('id')
+            ->pluck('qty');
+
+        foreach ($later as $qty) {
+            $running += (int) $qty;
+            $lowest = min($lowest, $running);
+        }
+
+        return max(0, $lowest);
     }
 
     public function stockQtyAt(int $variantId, int $warehouseId, CarbonInterface|string $at): int

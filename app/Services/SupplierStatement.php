@@ -10,7 +10,8 @@ use Illuminate\Support\Facades\DB;
 
 /**
  * Ringkasan tagihan supplier per periode:
- * saldo awal (sebelum periode) + tagihan normal + titipan grosir - pembayaran = sisa tagihan akhir periode.
+ * saldo awal (sebelum periode) + Tagihan Pembelian + Tagihan Barang Keluar (+ titipan grosir) - pembayaran
+ * = sisa tagihan akhir periode (1 saldo per supplier).
  */
 class SupplierStatement
 {
@@ -41,7 +42,10 @@ class SupplierStatement
         return $suppliers
             ->select('suppliers.*')
             ->selectSub($opening, 'opening_balance')
-            ->selectSub($lines('l.qty'), 'qty_sold')
+            ->selectSub($lines('l.qty', "l.kind = 'pembelian'"), 'qty_purchased')
+            ->selectSub($lines('l.amount', "l.kind = 'pembelian'"), 'billed_purchase')
+            ->selectSub($lines('l.qty', "l.kind = 'barang_keluar'"), 'qty_sold')
+            ->selectSub($lines('l.amount', "l.kind = 'barang_keluar' AND NOT l.is_consignment"), 'billed_goods_out')
             ->selectSub($lines('l.amount', 'NOT l.is_consignment'), 'billed_normal')
             ->selectSub($lines('l.amount', 'l.is_consignment'), 'billed_consignment')
             ->selectSub($payments(), 'paid');
@@ -69,7 +73,8 @@ class SupplierStatement
      */
     public function unallocated(?string $from = null, ?string $until = null): array
     {
-        $query = SupplierBillLine::query()->whereNull('supplier_id')->whereNull('stock_lot_id')
+        // Tagihan Barang Keluar yang Model Produk-nya belum punya supplier.
+        $query = SupplierBillLine::query()->whereNull('supplier_id')
             ->when($from, fn ($query) => $query->whereDate('billed_on', '>=', $from))
             ->when($until, fn ($query) => $query->whereDate('billed_on', '<=', $until));
 

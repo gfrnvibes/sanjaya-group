@@ -6,31 +6,21 @@ use App\Services\SupplierBilling;
 use Illuminate\Console\Command;
 
 /**
- * Hitung ulang tagihan supplier dari awal. Hanya pesanan mulai --from yang ditagihkan. Pembayaran supplier tidak berubah.
- * --mode=barang_keluar: tiap pesanan ditagihkan ke supplier Model Produk (tanpa stok); --mode=stok: FIFO lot Barang Masuk.
+ * Hitung ulang tagihan supplier beli jadi dari awal: alokasi stok vs dikirim langsung supplier diulang urut tanggal,
+ * lalu Tagihan Pembelian & Tagihan Barang Keluar dibuat ulang. Hanya mulai --from yang ditagihkan. Pembayaran tidak berubah.
  */
 class RebuildSupplierBilling extends Command
 {
-    protected $signature = 'supplier-billing:rebuild
-        {--from= : Tagihkan pesanan mulai tanggal ini (YYYY-MM-DD); default pengaturan / 2026-08-01}
-        {--mode= : barang_keluar atau stok; default mode yang sedang dipakai}';
+    protected $signature = 'supplier-billing:rebuild {--from= : Tagihkan pembelian & pesanan mulai tanggal ini (YYYY-MM-DD); default pengaturan / 2026-08-01}';
 
-    protected $description = 'Hitung ulang tagihan supplier barang jadi (berdasarkan barang keluar, atau FIFO lot Barang Masuk Beli Jadi)';
+    protected $description = 'Hitung ulang tagihan supplier beli jadi (Tagihan Pembelian & Tagihan Barang Keluar)';
 
     public function handle(SupplierBilling $billing): int
     {
-        $mode = $this->option('mode') ?: null;
+        $result = $billing->rebuild($this->option('from') ?: null);
 
-        if ($mode !== null && ! isset(SupplierBilling::MODES[$mode])) {
-            $this->error('Mode harus '.implode(' atau ', array_keys(SupplierBilling::MODES)).'.');
-
-            return self::FAILURE;
-        }
-
-        $result = $billing->rebuild($this->option('from') ?: null, $mode);
-
-        $this->info("Tagihan supplier dihitung ulang mulai {$billing->startDate()} (".SupplierBilling::MODES[$billing->mode()].'): '
-            ."{$result['lots']} lot, {$result['lines']} baris tagihan, {$result['unallocated']} pcs tanpa supplier, {$result['no_price']} pcs tanpa harga beli.");
+        $this->info("Tagihan supplier dihitung ulang mulai {$billing->startDate()}: {$result['purchase']} baris pembelian, {$result['goods_out']} baris barang keluar, "
+            ."{$result['corrected']} penjualan dikoreksi alokasi stoknya, {$result['no_supplier']} pcs tanpa supplier, {$result['no_price']} pcs tanpa harga beli.");
 
         return self::SUCCESS;
     }

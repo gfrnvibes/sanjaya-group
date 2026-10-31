@@ -16,7 +16,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 class GoodsReceipt extends Model
 {
     /**
-     * Supplier dikoreksi setelah barang masuk: lot beli jadi & tagihan supplier-nya ikut pindah.
+     * Supplier dikoreksi setelah barang masuk: Tagihan Pembelian dokumen ini dibuat ulang ke supplier baru.
      */
     protected static function booted(): void
     {
