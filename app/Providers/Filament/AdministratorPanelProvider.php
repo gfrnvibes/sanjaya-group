@@ -2,10 +2,13 @@
 
 namespace App\Providers\Filament;
 
+use App\Enums\TableDensity;
+use App\Filament\Pages\DisplaySettings;
 use App\Filament\Pages\SalesDashboard;
 use App\Http\Controllers\DownloadPaymentProof;
 use App\Http\Controllers\DownloadSalesImportFailures;
 use App\Http\Controllers\ShowPrintedTable;
+use Filament\Actions\Action;
 use Filament\Http\Middleware\Authenticate;
 use Filament\Http\Middleware\AuthenticateSession;
 use Filament\Http\Middleware\DisableBladeIconComponents;
@@ -16,6 +19,7 @@ use Filament\Panel;
 use Filament\PanelProvider;
 use Filament\Support\Colors\Color;
 use Filament\Support\Enums\Width;
+use Filament\Support\Icons\Heroicon;
 use Filament\View\PanelsRenderHook;
 use Filament\Widgets\AccountWidget;
 use Illuminate\Contracts\View\View;
@@ -88,6 +92,19 @@ class AdministratorPanelProvider extends PanelProvider
                 fn (): View => view('filament.pages.sales-dashboard-styles'),
                 scopes: SalesDashboard::class,
             )
-            ->maxContentWidth(Width::SevenExtraLarge);
+            // Preferensi tampilan per user (menu user > Tampilan).
+            ->userMenuItems([
+                Action::make('displaySettings')
+                    ->label('Tampilan')
+                    ->icon(Heroicon::OutlinedAdjustmentsHorizontal)
+                    ->url(fn (): string => DisplaySettings::getUrl()),
+            ])
+            ->maxContentWidth(fn (): Width => auth()->user()?->layout_width?->width() ?? Width::SevenExtraLarge)
+            ->renderHook(
+                PanelsRenderHook::STYLES_AFTER,
+                fn (): string => auth()->user()?->table_density === TableDensity::Compact
+                    ? view('filament.table-density-compact')->render()
+                    : '',
+            );
     }
 }
