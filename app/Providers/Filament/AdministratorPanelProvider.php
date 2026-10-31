@@ -8,6 +8,7 @@ use App\Filament\Pages\SalesDashboard;
 use App\Http\Controllers\DownloadPaymentProof;
 use App\Http\Controllers\DownloadSalesImportFailures;
 use App\Http\Controllers\ShowPrintedTable;
+use BezhanSalleh\FilamentShield\FilamentShieldPlugin;
 use Filament\Actions\Action;
 use Filament\Enums\DatabaseNotificationsPosition;
 use Filament\Enums\GlobalSearchPosition;
@@ -72,6 +73,12 @@ class AdministratorPanelProvider extends PanelProvider
                 Route::get('import-gagal/unduh', DownloadSalesImportFailures::class)->name('sales-import-failures.download');
                 Route::get('cetak/{token}', ShowPrintedTable::class)->whereUuid('token')->name('print');
             })
+            // Peran & hak akses (Filament Shield): izin per resource/halaman/widget + izin khusus import; super_admin = semua akses.
+            ->plugins([
+                FilamentShieldPlugin::make()
+                    ->navigationGroup('Pengaturan')
+                    ->navigationSort(2),
+            ])
             ->discoverResources(in: app_path('Filament/Resources'), for: 'App\Filament\Resources')
             ->discoverPages(in: app_path('Filament/Pages'), for: 'App\Filament\Pages')
             ->pages([

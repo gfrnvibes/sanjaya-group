@@ -237,7 +237,7 @@ it('shows the supplier statement per period with tabs and reduces it by payments
     sellReadyMade($f, 4, '2026-08-03');
     SupplierPayment::create(['supplier_id' => $f['rudi']->id, 'paid_at' => '2026-08-10', 'amount' => 100000]);
     $admin = User::factory()->create(['is_active' => true]);
-    $admin->assignRole(Role::findOrCreate('admin', 'web'));
+    $admin->assignRole(Role::findOrCreate('super_admin', 'web'));
     $this->actingAs($admin);
 
     expect(app(SupplierStatement::class)->balance($f['rudi']))->toBe(300000.0);

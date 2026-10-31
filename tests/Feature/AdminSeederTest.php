@@ -16,7 +16,7 @@ it('creates an active staff admin with configured credentials and all web permis
     expect($admin->is_active)->toBeTrue();
     expect($admin->isKonveksiStaff())->toBeTrue();
     expect(Hash::check('admin-test-secret', $admin->password))->toBeTrue();
-    expect($admin->hasRole('admin'))->toBeTrue();
+    expect($admin->hasRole('super_admin'))->toBeTrue();
     expect($admin->getAllPermissions()->pluck('id')->sort()->values()->all())
         ->toBe(Permission::where('guard_name', 'web')->orderBy('id')->pluck('id')->all());
 });

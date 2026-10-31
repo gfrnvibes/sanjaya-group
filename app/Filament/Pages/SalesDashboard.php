@@ -20,8 +20,8 @@ use App\Models\Reseller;
 use App\Models\Store;
 use App\Services\SalesDashboardExporter;
 use App\Services\SalesDashboardService;
-use App\Support\ApplicationAccess;
 use BackedEnum;
+use BezhanSalleh\FilamentShield\Traits\HasPageShield;
 use Filament\Actions\Action;
 use Filament\Actions\ActionGroup;
 use Filament\Forms\Components\DatePicker;
@@ -42,12 +42,8 @@ use UnitEnum;
  */
 class SalesDashboard extends Dashboard
 {
-    public static function canAccess(): bool
-    {
-        return ApplicationAccess::allows('lihat laporan');
-    }
-
     use HasFiltersForm;
+    use HasPageShield;
 
     protected static string $routePath = 'dashboard-produk';
 

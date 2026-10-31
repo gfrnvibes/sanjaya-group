@@ -23,7 +23,8 @@ class AdminPermissionSeeder extends Seeder
                 Permission::findOrCreate($name, 'web');
             }
 
-            Role::findOrCreate('admin', 'web')->syncPermissions(
+            // Super admin (Filament Shield) memegang semua izin; akses penuhnya juga dijamin lewat Gate.
+            Role::findOrCreate(ApplicationAccess::superAdminRole(), 'web')->syncPermissions(
                 Permission::query()->where('guard_name', 'web')->get(),
             );
         });

@@ -12,7 +12,7 @@ use Spatie\Permission\PermissionRegistrar;
 
 class SetupAccess extends Command
 {
-    protected $signature = 'access:setup {--admin= : Email staf aktif yang akan menjadi admin}';
+    protected $signature = 'access:setup {--admin= : Email staf aktif yang akan menjadi super admin}';
 
     protected $description = 'Siapkan izin aplikasi dan tetapkan admin secara eksplisit';
 
@@ -22,7 +22,7 @@ class SetupAccess extends Command
             foreach (ApplicationAccess::PERMISSIONS as $name) {
                 Permission::findOrCreate($name, 'web');
             }
-            foreach (['admin' => ApplicationAccess::PERMISSIONS, 'gudang' => ['kelola stok', 'kelola produksi', 'kelola katalog'], 'keuangan' => ['kelola keuangan', 'lihat laporan'], 'reseller' => []] as $name => $permissions) {
+            foreach ([ApplicationAccess::superAdminRole() => ApplicationAccess::PERMISSIONS, 'gudang' => ['kelola stok', 'kelola produksi', 'kelola katalog'], 'keuangan' => ['kelola keuangan', 'lihat laporan'], 'reseller' => []] as $name => $permissions) {
                 Role::findOrCreate($name, 'web')->syncPermissions($permissions);
             }
         });
@@ -35,8 +35,8 @@ class SetupAccess extends Command
 
                 return self::FAILURE;
             }
-            $user->assignRole('admin');
-            $this->info('Peran admin diberikan kepada staf yang dipilih.');
+            $user->assignRole(ApplicationAccess::superAdminRole());
+            $this->info('Peran super admin diberikan kepada staf yang dipilih.');
         }
         $this->info('Izin aplikasi siap.');
 

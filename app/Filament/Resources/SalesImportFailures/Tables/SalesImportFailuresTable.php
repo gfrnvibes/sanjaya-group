@@ -14,7 +14,6 @@ use App\Services\SalesOrderImporter;
 use App\Services\SalesOrderSpreadsheet;
 use App\Services\SkuMapping;
 use App\Services\SkuMatcher;
-use App\Support\ApplicationAccess;
 use Filament\Actions\Action;
 use Filament\Actions\ActionGroup;
 use Filament\Actions\BulkAction;
@@ -146,12 +145,11 @@ class SalesImportFailuresTable
                         ->color('gray')
                         ->visible(fn (SalesImportFailure $record): bool => $record->status === ImportFailureStatus::Ignored && ImportRegistry::allows($record->importer))
                         ->action(fn (SalesImportFailure $record) => $record->update(['status' => ImportFailureStatus::Open, 'resolved_at' => null])),
-                    // Hapus permanen: khusus admin (izin dicek juga lewat Gate, lihat ApplicationAccess).
+                    // Hapus permanen: permission Shield Delete:SalesImportFailure (default hanya super admin).
                     DeleteAction::make()
                         ->label('Hapus')
                         ->modalHeading('Hapus baris ini?')
-                        ->modalDescription('Baris dihapus permanen dari Import Perlu Dicek dan tidak bisa dicoba ulang lagi. Data yang sudah tersimpan tidak terpengaruh. Untuk sekadar menyembunyikan, pakai Abaikan.')
-                        ->visible(fn (): bool => ApplicationAccess::allows('administrator')),
+                        ->modalDescription('Baris dihapus permanen dari Import Perlu Dicek dan tidak bisa dicoba ulang lagi. Data yang sudah tersimpan tidak terpengaruh. Untuk sekadar menyembunyikan, pakai Abaikan.'),
                 ]),
             ])
             ->toolbarActions([
@@ -237,8 +235,7 @@ class SalesImportFailuresTable
                     DeleteBulkAction::make()
                         ->label('Hapus yang dipilih')
                         ->modalHeading('Hapus baris yang dipilih?')
-                        ->modalDescription('Baris dihapus permanen dari Import Perlu Dicek. Data yang sudah tersimpan tidak terpengaruh. Khusus admin.')
-                        ->visible(fn (): bool => ApplicationAccess::allows('administrator')),
+                        ->modalDescription('Baris dihapus permanen dari Import Perlu Dicek. Data yang sudah tersimpan tidak terpengaruh.'),
                 ]),
             ]);
     }

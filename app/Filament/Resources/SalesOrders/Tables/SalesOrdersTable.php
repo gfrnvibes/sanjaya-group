@@ -119,7 +119,7 @@ class SalesOrdersTable
                     ->label('Tandai Selesai')
                     ->icon(Heroicon::OutlinedCheckCircle)
                     ->color('success')
-                    ->authorize(fn (): bool => ApplicationAccess::allows('kelola penjualan'))
+                    ->authorize(fn (): bool => ApplicationAccess::allows('Update:SalesOrder'))
                     ->requiresConfirmation()
                     ->modalDescription('Pesanan berstatus Diproses yang dipilih menjadi Selesai (tagihan supplier barang beli jadi ikut terbentuk). Pesanan dengan status lain dilewati.')
                     ->deselectRecordsAfterCompletion()

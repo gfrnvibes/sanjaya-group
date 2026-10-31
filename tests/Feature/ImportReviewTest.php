@@ -29,7 +29,7 @@ use Spatie\Permission\Models\Role;
 function reviewAdmin(): User
 {
     $user = User::factory()->create(['is_active' => true]);
-    $user->assignRole(Role::findOrCreate('admin', 'web'));
+    $user->assignRole(Role::findOrCreate('super_admin', 'web'));
 
     return $user;
 }

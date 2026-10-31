@@ -42,7 +42,7 @@ it('maps the ticked SKUs from the bulk screen and retries all of their orders at
     $f = businessFixture();
     failedSkuRows($f);
     $user = User::factory()->create(['is_active' => true]);
-    $user->assignRole(Role::findOrCreate('admin', 'web'));
+    $user->assignRole(Role::findOrCreate('super_admin', 'web'));
     $this->actingAs($user);
 
     Livewire::test(ListSalesImportFailures::class)
@@ -66,7 +66,7 @@ it('renders the bulk screen prefilled with one row per failed SKU', function () 
     $f = businessFixture();
     failedSkuRows($f);
     $user = User::factory()->create(['is_active' => true]);
-    $user->assignRole(Role::findOrCreate('admin', 'web'));
+    $user->assignRole(Role::findOrCreate('super_admin', 'web'));
     $this->actingAs($user);
 
     $page = Livewire::test(ListSalesImportFailures::class)
@@ -82,7 +82,7 @@ it('requires a variant for every ticked SKU', function () {
     $f = businessFixture();
     failedSkuRows($f);
     $user = User::factory()->create(['is_active' => true]);
-    $user->assignRole(Role::findOrCreate('admin', 'web'));
+    $user->assignRole(Role::findOrCreate('super_admin', 'web'));
     $this->actingAs($user);
 
     Livewire::test(ListSalesImportFailures::class)
@@ -99,7 +99,7 @@ it('requires a variant for every ticked SKU', function () {
 function actingAsAdmin(): User
 {
     $user = User::factory()->create(['is_active' => true]);
-    $user->assignRole(Role::findOrCreate('admin', 'web'));
+    $user->assignRole(Role::findOrCreate('super_admin', 'web'));
     test()->actingAs($user);
 
     return $user;

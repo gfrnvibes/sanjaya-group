@@ -10,7 +10,7 @@ use Spatie\Permission\Models\Role;
 it('creates the admin role with every application permission', function () {
     $this->seed(AdminPermissionSeeder::class);
 
-    $admin = Role::findByName('admin', 'web');
+    $admin = Role::findByName('super_admin', 'web');
 
     foreach (ApplicationAccess::PERMISSIONS as $name) {
         expect($admin->hasPermissionTo($name))->toBeTrue();
@@ -28,7 +28,7 @@ it('includes custom web permissions without changing other roles or guards on re
     $this->seed(AdminPermissionSeeder::class);
     $this->seed(AdminPermissionSeeder::class);
 
-    expect(Role::findByName('admin', 'web')->permissions->pluck('name')->all())
+    expect(Role::findByName('super_admin', 'web')->permissions->pluck('name')->all())
         ->toContain('ekspor data')->not->toContain('akses api');
     expect($staff->fresh()->permissions->pluck('name')->all())->toBe(['ekspor data']);
     expect($apiAdmin->fresh()->permissions->pluck('name')->all())->toBe(['akses api']);
@@ -41,6 +41,6 @@ it('grants custom permissions to admin through the access seeder', function () {
 
     $this->seed(AccessSeeder::class);
 
-    expect(Role::findByName('admin', 'web')->hasPermissionTo('ekspor data'))->toBeTrue();
+    expect(Role::findByName('super_admin', 'web')->hasPermissionTo('ekspor data'))->toBeTrue();
     expect(User::where('email', config('admin.email'))->firstOrFail()->hasPermissionTo('ekspor data'))->toBeTrue();
 });

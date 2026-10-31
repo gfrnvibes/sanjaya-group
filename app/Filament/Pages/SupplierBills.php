@@ -12,6 +12,7 @@ use App\Services\SupplierBilling;
 use App\Services\SupplierStatement;
 use App\Support\ApplicationAccess;
 use BackedEnum;
+use BezhanSalleh\FilamentShield\Traits\HasPageShield;
 use Filament\Actions\Action;
 use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\Select;
@@ -41,6 +42,7 @@ use UnitEnum;
  */
 class SupplierBills extends Page implements HasTable
 {
+    use HasPageShield;
     use HasTabs;
     use InteractsWithTable;
 
@@ -57,11 +59,6 @@ class SupplierBills extends Page implements HasTable
     protected static ?string $slug = 'tagihan-supplier';
 
     public const TAB_SUMMARY = 'ringkasan';
-
-    public static function canAccess(): bool
-    {
-        return ApplicationAccess::allows('kelola keuangan');
-    }
 
     public function mount(): void
     {

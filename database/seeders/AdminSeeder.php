@@ -3,6 +3,7 @@
 namespace Database\Seeders;
 
 use App\Models\User;
+use App\Support\ApplicationAccess;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
 
@@ -38,7 +39,7 @@ class AdminSeeder extends Seeder
 
             $this->call(AdminPermissionSeeder::class);
 
-            $admin->assignRole('admin');
+            $admin->assignRole(ApplicationAccess::superAdminRole());
         });
     }
 }

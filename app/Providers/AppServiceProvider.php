@@ -11,6 +11,7 @@ use App\Models\StockOpnameItem;
 use App\Models\User;
 use App\Models\WorkOrderItem;
 use App\Observers\BusinessRecordObserver;
+use App\Policies\ActivityPolicy;
 use App\Services\SalesDashboardService;
 use App\Services\SkuMatcher;
 use App\Support\ApplicationAccess;
@@ -23,6 +24,7 @@ use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\ServiceProvider;
+use Spatie\Activitylog\Models\Activity;
 use Spatie\Permission\Events\PermissionAttachedEvent;
 use Spatie\Permission\Events\PermissionDetachedEvent;
 use Spatie\Permission\Events\RoleAttachedEvent;
@@ -55,6 +57,9 @@ class AppServiceProvider extends ServiceProvider
             ->paginationPageOptions([10, 25, 50, 100])
             ->defaultPaginationPageOption(25));
 
+        // Model vendor (log aktivitas) tidak ikut auto-discovery policy: daftarkan policy Shield-nya.
+        Gate::policy(Activity::class, ActivityPolicy::class);
+
         Gate::before(function (User $user, string $ability, array $arguments): ?bool {
             if (! $user->is_active || ! $user->isKonveksiStaff()) {
                 return false;
@@ -63,10 +68,15 @@ class AppServiceProvider extends ServiceProvider
             $model = $arguments[0] ?? null;
 
             if ($model instanceof Model || (is_string($model) && is_subclass_of($model, Model::class))) {
-                return ApplicationAccess::model($ability, $model, $user);
+                $decision = ApplicationAccess::model($ability, $model, $user);
+
+                if ($decision !== null) {
+                    return $decision;
+                }
             }
 
-            return null;
+            // Super admin: semua akses. Selain itu policy & permission Filament Shield yang memutuskan.
+            return $user->hasRole(ApplicationAccess::superAdminRole()) ? true : null;
         });
 
         foreach (File::files(app_path('Models')) as $file) {

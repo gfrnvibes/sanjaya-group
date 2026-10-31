@@ -6,7 +6,7 @@ use Spatie\Permission\Models\Role;
 
 it('renders all administrator resource index and create pages for an administrator', function () {
     $user = User::factory()->create(['is_active' => true]);
-    $user->assignRole(Role::findOrCreate('admin', 'web'));
+    $user->assignRole(Role::findOrCreate('super_admin', 'web'));
     $this->actingAs($user);
     foreach (Route::getRoutes() as $route) {
         $name = $route->getName() ?? '';

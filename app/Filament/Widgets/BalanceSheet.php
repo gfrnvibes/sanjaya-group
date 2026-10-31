@@ -3,7 +3,7 @@
 namespace App\Filament\Widgets;
 
 use App\Services\BalanceSheetService;
-use App\Support\ApplicationAccess;
+use BezhanSalleh\FilamentShield\Traits\HasWidgetShield;
 use Filament\Actions\Concerns\InteractsWithActions;
 use Filament\Actions\Contracts\HasActions;
 use Filament\Forms\Components\Select;
@@ -25,11 +25,7 @@ use Illuminate\Support\Carbon;
  */
 class BalanceSheet extends Widget implements HasActions, HasSchemas
 {
-    public static function canView(): bool
-    {
-        return ApplicationAccess::allows('lihat laporan');
-    }
-
+    use HasWidgetShield;
     use InteractsWithActions;
     use InteractsWithSchemas;
 

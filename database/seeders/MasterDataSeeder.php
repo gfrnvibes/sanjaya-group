@@ -13,6 +13,7 @@ use App\Models\Setting;
 use App\Models\Supplier;
 use App\Models\Tailor;
 use App\Models\Warehouse;
+use App\Support\ApplicationAccess;
 use Illuminate\Database\Seeder;
 use Spatie\Permission\Models\Permission;
 use Spatie\Permission\Models\Role;
@@ -81,13 +82,14 @@ class MasterDataSeeder extends Seeder
 
     private function seedRoles(): void
     {
-        $permissions = collect(['kelola penjualan', 'kelola stok', 'kelola produksi', 'kelola keuangan', 'lihat laporan'])
-            ->map(fn (string $name) => Permission::create(['name' => $name, 'guard_name' => 'web']));
+        $permissions = collect(ApplicationAccess::PERMISSIONS)
+            ->map(fn (string $name) => Permission::findOrCreate($name, 'web'));
 
-        Role::create(['name' => 'admin', 'guard_name' => 'web'])->syncPermissions($permissions);
-        Role::create(['name' => 'gudang', 'guard_name' => 'web'])->syncPermissions(['kelola stok', 'kelola produksi']);
-        Role::create(['name' => 'keuangan', 'guard_name' => 'web'])->syncPermissions(['kelola keuangan', 'lihat laporan']);
-        Role::create(['name' => 'reseller', 'guard_name' => 'web'])->syncPermissions(['lihat laporan']);
+        // super_admin (Filament Shield) = semua akses; peran lain diatur lewat menu Peran (izin per resource/halaman).
+        Role::findOrCreate(ApplicationAccess::superAdminRole(), 'web')->syncPermissions($permissions);
+        Role::findOrCreate('gudang', 'web')->syncPermissions(['kelola stok', 'kelola produksi']);
+        Role::findOrCreate('keuangan', 'web')->syncPermissions(['kelola keuangan', 'lihat laporan']);
+        Role::findOrCreate('reseller', 'web')->syncPermissions(['lihat laporan']);
     }
 
     private function seedChannels(): void

@@ -5,7 +5,7 @@ namespace App\Filament\Widgets;
 use App\Filament\Pages\SalesDashboard;
 use App\Models\Setting;
 use App\Services\SalesDashboardService;
-use App\Support\ApplicationAccess;
+use BezhanSalleh\FilamentShield\Traits\HasWidgetShield;
 use Filament\Actions\Action;
 use Filament\Support\Enums\TextSize;
 use Filament\Support\Icons\Heroicon;
@@ -24,9 +24,13 @@ class ReturnAlerts extends TableWidget
 
     protected int|string|array $columnSpan = 'full';
 
+    use HasWidgetShield {
+        canView as shieldCanView;
+    }
+
     public static function canView(): bool
     {
-        return ApplicationAccess::allows('lihat laporan') && self::alerts()->isNotEmpty();
+        return static::shieldCanView() && self::alerts()->isNotEmpty();
     }
 
     /**

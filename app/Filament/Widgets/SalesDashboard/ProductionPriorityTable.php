@@ -103,7 +103,7 @@ class ProductionPriorityTable extends DashboardTableWidget
     private function createWorkOrderAction(): Action
     {
         return Action::make('createWorkOrder')
-            ->authorize(fn (): bool => ApplicationAccess::allows('kelola produksi'))
+            ->authorize(fn (): bool => ApplicationAccess::allows('Create:WorkOrder'))
             ->label('Buat SPK dari Saran')
             ->icon(Heroicon::OutlinedClipboardDocumentList)
             ->color('primary')

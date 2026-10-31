@@ -9,7 +9,7 @@ use Spatie\Permission\Models\Role;
 
 beforeEach(function () {
     $user = User::factory()->create(['is_active' => true]);
-    $user->assignRole(Role::findOrCreate('admin', 'web'));
+    $user->assignRole(Role::findOrCreate('super_admin', 'web'));
     $this->actingAs($user);
 });
 

@@ -9,8 +9,8 @@ use App\Imports\GoodsStockCountImport;
 use App\Imports\MaterialStockCountImport;
 use App\Services\CatalogImporter;
 use App\Services\CatalogSpreadsheet;
-use App\Support\ApplicationAccess;
 use BackedEnum;
+use BezhanSalleh\FilamentShield\Traits\HasPageShield;
 use Filament\Actions\Action;
 use Filament\Actions\ActionGroup;
 use Filament\Forms\Components\Toggle;
@@ -28,10 +28,7 @@ use Filament\Support\Icons\Heroicon;
  */
 class DataExchange extends Page
 {
-    public static function canAccess(): bool
-    {
-        return ApplicationAccess::allows('administrator');
-    }
+    use HasPageShield;
 
     protected static string $routePath = 'import-export';
 

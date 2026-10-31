@@ -70,7 +70,7 @@ class PriceComponentResource extends Resource
 
     public static function canEditPrices(): bool
     {
-        return ApplicationAccess::allows('kelola katalog');
+        return ApplicationAccess::allows('Update:ProductVariant');
     }
 
     public static function kind(): ?ProductKind

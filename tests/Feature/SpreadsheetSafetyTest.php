@@ -36,7 +36,7 @@ it('exports aliases as literal spreadsheet text while retaining leading zero SKU
 it('exports numeric looking SKU strings without stripping leading zeroes from a resource table', function () {
     $f = businessFixture();
     $user = User::factory()->create(['is_active' => true]);
-    $user->assignRole(Role::findOrCreate('admin', 'web'));
+    $user->assignRole(Role::findOrCreate('super_admin', 'web'));
     $this->actingAs($user);
     $component = Livewire::test(ListProductVariants::class);
     $path = app(TableExporter::class)->export($component->instance(), 'xlsx', 'Products');

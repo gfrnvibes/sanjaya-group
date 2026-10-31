@@ -8,7 +8,7 @@ use App\Models\KonveksiMonthlyProfit;
 use App\Models\ResellerReceivable;
 use App\Models\SalesOrderItem;
 use App\Models\WorkOrder;
-use App\Support\ApplicationAccess;
+use BezhanSalleh\FilamentShield\Traits\HasWidgetShield;
 use Filament\Support\Icons\Heroicon;
 use Filament\Widgets\StatsOverviewWidget;
 use Filament\Widgets\StatsOverviewWidget\Stat;
@@ -17,10 +17,7 @@ use Illuminate\Support\Number;
 
 class BusinessOverview extends StatsOverviewWidget
 {
-    public static function canView(): bool
-    {
-        return ApplicationAccess::allows('lihat laporan');
-    }
+    use HasWidgetShield;
 
     protected static ?int $sort = 1;
 

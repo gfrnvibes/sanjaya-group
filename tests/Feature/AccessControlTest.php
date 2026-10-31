@@ -15,23 +15,33 @@ use Spatie\Permission\Models\Role;
 it('rejects inactive and reseller accounts from the administrator panel', function (bool $active, bool $reseller) {
     $fixture = businessFixture();
     $user = User::factory()->create(['is_active' => $active, 'owner_id' => $reseller ? $fixture['owner']->id : null]);
-    $user->assignRole(Role::findOrCreate('admin', 'web'));
+    $user->assignRole(Role::findOrCreate('super_admin', 'web'));
     $this->actingAs($user)->get('/administrator/users')->assertForbidden();
 })->with(['inactive staff' => [false, false], 'active reseller' => [true, true], 'inactive reseller' => [false, true]]);
 
 it('restricts user management to administrators even when staff can manage inventory', function () {
     $user = User::factory()->create(['is_active' => true]);
-    $user->givePermissionTo(Permission::findOrCreate('kelola stok', 'web'));
+    $user->givePermissionTo(Permission::findOrCreate('kelola stok', 'web'), Permission::findOrCreate('ViewAny:StockBalance', 'web'));
     $this->actingAs($user)->get('/administrator/users')->assertForbidden();
-    $this->get('/administrator/roles')->assertForbidden();
+    $this->get('/administrator/shield/roles')->assertForbidden();
     $this->get('/administrator/settings')->assertForbidden();
     $this->get('/administrator/data-exchange')->assertForbidden();
     $this->get('/administrator/stock-balances')->assertOk();
 });
 
+it('gives super admins every page, including role management from Filament Shield', function () {
+    $user = User::factory()->create(['is_active' => true]);
+    $user->assignRole(Role::findOrCreate('super_admin', 'web'));
+
+    $this->actingAs($user)->get('/administrator/shield/roles')->assertOk();
+    $this->get('/administrator/users')->assertOk();
+    $this->get('/administrator/data-exchange')->assertOk();
+    $this->get('/administrator/tagihan-supplier')->assertOk();
+});
+
 it('allows an active administrator to use the panel in production', function () {
     $user = User::factory()->create(['is_active' => true]);
-    $user->assignRole(Role::findOrCreate('admin', 'web'));
+    $user->assignRole(Role::findOrCreate('super_admin', 'web'));
     config(['app.env' => 'production']);
     $this->actingAs($user)->get('/administrator/users')->assertOk();
 });
@@ -45,7 +55,7 @@ it('serves payment proofs only to authorized finance staff', function () {
     $this->get($url)->assertRedirect();
     $user = User::factory()->create(['is_active' => true]);
     $this->actingAs($user)->get($url)->assertForbidden();
-    $user->givePermissionTo(Permission::findOrCreate('kelola keuangan', 'web'));
+    $user->givePermissionTo(Permission::findOrCreate('View:ResellerPayment', 'web'));
     $user->unsetRelation('permissions');
     $this->get($url)->assertOk()->assertDownload('proof.png');
 });
@@ -81,7 +91,7 @@ it('moves old publicly stored payment proofs to private storage including orphan
 
 it('records role changes made from the user form', function () {
     $admin = User::factory()->create(['is_active' => true]);
-    $admin->assignRole(Role::findOrCreate('admin', 'web'));
+    $admin->assignRole(Role::findOrCreate('super_admin', 'web'));
     $staff = User::factory()->create(['is_active' => true]);
     $role = Role::findOrCreate('gudang', 'web');
     $this->actingAs($admin);
