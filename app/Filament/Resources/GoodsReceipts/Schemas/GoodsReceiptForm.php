@@ -84,7 +84,8 @@ class GoodsReceiptForm
                                     ->distinct(),
                                 TextInput::make('qty')
                                     ->integer()
-                                    ->minValue(1)
+                                    ->minValue(0)
+                                    ->helperText('0 = hanya catat harga beli, stok tidak bertambah.')
                                     ->required(),
                                 TextInput::make('unit_cost')
                                     ->numeric()

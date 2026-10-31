@@ -113,7 +113,8 @@ class SupplierBilling
         $receipt = $item->receipt;
 
         // Mode barang keluar: tanpa lot (stok belum dipakai untuk tagihan); lot dibentuk saat kembali ke mode stok + hitung ulang.
-        if ($this->billsBySales() || $receipt?->source !== GoodsReceiptSource::BeliJadi || $item->unit_cost === null || StockLot::query()->where('goods_receipt_item_id', $item->id)->exists()) {
+        // Qty 0 = hanya catat harga beli: tidak ada barang, tidak ada lot.
+        if ($this->billsBySales() || $item->qty <= 0 || $receipt?->source !== GoodsReceiptSource::BeliJadi || $item->unit_cost === null || StockLot::query()->where('goods_receipt_item_id', $item->id)->exists()) {
             return null;
         }
 

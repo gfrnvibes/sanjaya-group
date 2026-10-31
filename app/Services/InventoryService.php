@@ -10,6 +10,7 @@ use App\Models\GoodsReceipt;
 use App\Models\MaterialPurchase;
 use App\Models\StockAdjustment;
 use App\Models\StockBalance;
+use App\Models\StockLot;
 use App\Models\StockOpname;
 use Illuminate\Support\Facades\DB;
 
@@ -60,6 +61,11 @@ class InventoryService
             foreach ($items as $row) {
                 $item = $receipt->items()->create($row);
 
+                // Qty 0: hanya mencatat harga beli (HPP beli jadi), tanpa mutasi stok & tanpa lot.
+                if ($item->qty === 0) {
+                    continue;
+                }
+
                 $this->ledger->moveStock(
                     $item->variant_id, $receipt->warehouse_id, $item->qty, StockMovementType::GoodsIn,
                     $item, $item->unit_cost, movedAt: $receipt->received_at,
@@ -70,6 +76,36 @@ class InventoryService
             }
 
             return $receipt;
+        });
+    }
+
+    /**
+     * Ubah qty barang masuk menjadi 0 (harga beli tetap tercatat): stok yang pernah ditambahkan dibatalkan lewat mutasi
+     * pembalik di kartu stok (append-only), bertanggal sama dengan barang masuk. Lot FIFO ikut dibatalkan
+     * (mode stok: tagihan supplier dihitung ulang).
+     *
+     * @return int jumlah baris yang diubah
+     */
+    public function zeroGoodsReceiptQty(GoodsReceipt $receipt): int
+    {
+        return DB::transaction(function () use ($receipt): int {
+            $items = $receipt->items()->where('qty', '>', 0)->lockForUpdate()->get();
+
+            foreach ($items as $item) {
+                $this->ledger->moveStock(
+                    $item->variant_id, $receipt->warehouse_id, -$item->qty, StockMovementType::GoodsIn,
+                    $item, $item->unit_cost, note: "Koreksi qty {$receipt->receipt_no} menjadi 0 (hanya harga beli)", movedAt: $receipt->received_at,
+                );
+                $item->update(['qty' => 0]);
+            }
+
+            $hadLots = StockLot::query()->whereIn('goods_receipt_item_id', $items->modelKeys())->exists();
+
+            if ($hadLots) {
+                app(SupplierBilling::class)->rebuild();
+            }
+
+            return $items->count();
         });
     }
 

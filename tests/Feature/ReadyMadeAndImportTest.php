@@ -4,10 +4,13 @@ use App\Enums\GoodsReceiptSource;
 use App\Enums\VariantCostSource;
 use App\Enums\WageType;
 use App\Imports\ChannelImport;
+use App\Imports\GoodsReceiptImport;
 use App\Imports\OwnerImport;
 use App\Imports\PriceTierImport;
 use App\Imports\ProductModelImport;
 use App\Models\Channel;
+use App\Models\GoodsReceipt;
+use App\Models\GoodsReceiptItem;
 use App\Models\LaborType;
 use App\Models\Owner;
 use App\Models\PriceTier;
@@ -22,6 +25,7 @@ use App\Services\CatalogSpreadsheet;
 use App\Services\CostingService;
 use App\Services\InventoryService;
 use App\Services\PricingService;
+use App\Services\StockLedger;
 use App\Services\WorkOrderService;
 use App\Support\Spreadsheet;
 use OpenSpout\Common\Entity\Row;
@@ -256,4 +260,37 @@ it('pays wages by the labor type "dibayar sebagai" setting, whatever its code', 
         ->and((float) $workOrder->items()->sole()->labor_cost_snapshot)->toBe(8000.0)
         ->and($workOrder->laborTotal())->toBe(40000.0)
         ->and($workOrder->laborTotal(WageType::Potong))->toBe(10000.0);
+});
+
+it('imports ready made receipts with QTY 0 to record the purchase price without adding stock', function () {
+    $f = businessFixture();
+    $variant = readyMadeVariant($f);
+    $ledger = app(StockLedger::class);
+
+    $result = app(GoodsReceiptImport::class)->import(xlsxFile([
+        ['NO DOKUMEN', 'TANGGAL', 'GUDANG', 'SUMBER', 'SKU VARIAN', 'QTY', 'HARGA SATUAN'],
+        ['BM-HARGA-1', '2026-08-01', $f['warehouse']->code, 'Beli Jadi', 'RM-1', 0, 20000],
+    ]), 'harga.xlsx');
+
+    expect($result['errors'])->toBe([])
+        ->and(GoodsReceiptItem::query()->sole()->qty)->toBe(0)
+        ->and($ledger->stockQty($variant->id, $f['warehouse']->id))->toBe(0)
+        ->and(app(CostingService::class)->latestPurchase($variant, '2026-08-05')['unit_cost'])->toBe(20000.0);
+});
+
+it('sets the qty of an existing receipt to 0, reversing its stock but keeping the purchase price', function () {
+    $f = businessFixture();
+    $variant = readyMadeVariant($f);
+    receiveReadyMade($f, $variant, 20000, '2026-08-01'); // qty 10
+    $ledger = app(StockLedger::class);
+    $receipt = GoodsReceipt::query()->sole();
+
+    expect($ledger->stockQty($variant->id, $f['warehouse']->id))->toBe(10);
+
+    expect(app(InventoryService::class)->zeroGoodsReceiptQty($receipt))->toBe(1)
+        ->and(app(InventoryService::class)->zeroGoodsReceiptQty($receipt->fresh()))->toBe(0); // aman diulang
+
+    expect($ledger->stockQty($variant->id, $f['warehouse']->id))->toBe(0)
+        ->and($receipt->items()->sole()->qty)->toBe(0)
+        ->and(app(CostingService::class)->latestPurchase($variant, '2026-08-05')['unit_cost'])->toBe(20000.0);
 });

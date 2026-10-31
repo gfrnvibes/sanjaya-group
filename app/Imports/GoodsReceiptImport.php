@@ -36,7 +36,7 @@ class GoodsReceiptImport extends RowImporter
             'SUMBER' => ['source', '-', 'Produksi / Borongan / Beli Jadi / Retur / Lainnya. Default Lainnya.'],
             'SUPPLIER' => ['supplier', '-', 'Belum ada = dibuat otomatis.'],
             'SKU VARIAN' => ['sku', 'Ya', 'SKU varian atau SKU BigSeller.'],
-            'QTY' => ['qty', 'Ya', 'Bilangan bulat > 0.'],
+            'QTY' => ['qty', 'Ya', 'Bilangan bulat >= 0. Isi 0 bila hanya mencatat harga beli (stok tidak bertambah).'],
             'HARGA SATUAN' => ['unit_cost', 'Beli Jadi', 'Harga beli per pcs. Wajib untuk sumber Beli Jadi: HPP & harga reseller produk beli jadi dihitung otomatis dari harga ini + packing + margin.'],
             'CATATAN' => ['note', '-', 'Diambil dari baris pertama dokumen.'],
         ];
@@ -78,7 +78,7 @@ class GoodsReceiptImport extends RowImporter
 
         $items = collect($this->eachLine($rows, function (SpreadsheetRow $row) use ($source): array {
             $row->requireText(['sku' => 'SKU VARIAN']);
-            $qty = $row->number('qty', 'QTY', min: 1, required: true, integer: true);
+            $qty = $row->number('qty', 'QTY', min: 0, required: true, integer: true);
             $cost = $row->number('unit_cost', 'HARGA SATUAN', min: 0, required: $source === GoodsReceiptSource::BeliJadi);
             $row->throwIfInvalid();
 
