@@ -25,6 +25,11 @@ class ApplicationAccess
     {
         // Import Perlu Dicek: semua kategori data; tiap user hanya melihat kategori yang boleh ia impor.
         if (class_basename($model) === 'SalesImportFailure') {
+            // Hapus permanen baris Import Perlu Dicek: khusus admin.
+            if (in_array($ability, ['delete', 'deleteAny', 'forceDelete', 'forceDeleteAny'], true)) {
+                return self::allows('administrator', $user);
+            }
+
             $categories = collect(ImportRegistry::all());
 
             return $model instanceof SalesImportFailure

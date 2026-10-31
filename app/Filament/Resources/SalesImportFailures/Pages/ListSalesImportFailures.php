@@ -5,6 +5,7 @@ namespace App\Filament\Resources\SalesImportFailures\Pages;
 use App\Enums\ImportFailureReason;
 use App\Enums\ImportFailureStatus;
 use App\Enums\SalesOrderStatus;
+use App\Filament\Actions\BulkSkuMapping;
 use App\Filament\Actions\ResourceIo;
 use App\Filament\Resources\SalesImportFailures\SalesImportFailureResource;
 use App\Filament\Resources\SalesImportFailures\Widgets\ImportIssueOverview;
@@ -22,6 +23,7 @@ use Filament\Notifications\Notification;
 use Filament\Resources\Pages\ListRecords;
 use Filament\Schemas\Components\Component;
 use Filament\Schemas\Components\Tabs\Tab;
+use Filament\Support\Enums\Width;
 use Filament\Support\Icons\Heroicon;
 use Illuminate\Database\Eloquent\Builder;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
@@ -32,6 +34,39 @@ use Symfony\Component\HttpFoundation\BinaryFileResponse;
 class ListSalesImportFailures extends ListRecords
 {
     protected static string $resource = SalesImportFailureResource::class;
+
+    public function mount(): void
+    {
+        parent::mount();
+
+        $this->retryAlreadyMappedSkus();
+    }
+
+    /**
+     * Auto-perbaiki: baris "SKU tidak ditemukan" yang SKU-nya sudah dipetakan di tempat lain (menu Pemetaan SKU,
+     * import, katalog) langsung dicoba ulang saat halaman dibuka, agar tidak dipetakan dua kali.
+     */
+    private function retryAlreadyMappedSkus(): void
+    {
+        if (! ImportRegistry::allows(ImportRegistry::SALES_ORDERS)) {
+            return;
+        }
+
+        $result = app(SkuMapping::class)->retryResolvable(SkuMapping::defaultOptions());
+
+        if ($result['fixed'] === 0 && $result['failed'] === 0) {
+            return;
+        }
+
+        Notification::make()
+            ->title("{$result['fixed']} baris otomatis diperbaiki: SKU-nya sudah dipetakan")
+            ->body(collect([
+                $result['failed'] > 0 ? "{$result['failed']} baris masih gagal karena alasan lain (alasan terbaru ada di daftar)." : null,
+                $result['remaining'] > 0 ? "{$result['remaining']} baris lagi diproses saat halaman dimuat ulang." : null,
+            ])->filter()->implode(' ') ?: null)
+            ->{$result['failed'] === 0 ? 'success' : 'warning'}()
+            ->send();
+    }
 
     public function getSubheading(): ?string
     {
@@ -86,6 +121,7 @@ class ListSalesImportFailures extends ListRecords
     protected function getHeaderActions(): array
     {
         return [
+            $this->bulkMapSkuAction(),
             $this->applySuggestionsAction(),
             Action::make('downloadCategoryTemplate')
                 ->label(fn (): string => 'Unduh template '.ImportRegistry::label($this->activeCategory() ?? ''))
@@ -177,6 +213,30 @@ class ListSalesImportFailures extends ListRecords
             'goods_stock_count' => ['post' => (bool) ($data['post'] ?? false)],
             default => [],
         };
+    }
+
+    /**
+     * PETAKAN SKU MASSAL: 1 baris per SKU marketplace yang gagal, varian sudah terisi saran terbaik.
+     * Baris yang dicentang disimpan sebagai Pemetaan SKU lalu semua pesanannya dicoba ulang sekaligus.
+     */
+    private function bulkMapSkuAction(): Action
+    {
+        return Action::make('bulkMapSku')
+            // Tiap baris impor disimpan dalam transaksinya sendiri; jangan dibungkus transaksi panel (ribuan baris = lock habis).
+            ->databaseTransaction(false)
+            ->label('Petakan SKU massal')
+            ->icon(Heroicon::OutlinedQueueList)
+            ->color('primary')
+            ->visible(fn (): bool => in_array($this->activeCategory(), [null, ImportRegistry::SALES_ORDERS], true)
+                && ImportRegistry::allows(ImportRegistry::SALES_ORDERS)
+                && app(SkuMapping::class)->openSkuFailures()->exists())
+            ->modalHeading('Petakan SKU massal')
+            ->modalDescription('1 baris = 1 SKU marketplace yang belum dikenal. Varian sudah terisi saran sistem (kode model, warna, ukuran, nama produk & variasi); ubah yang salah, centang yang mau disimpan (atau Pilih semua). Pemetaan masuk menu Pemetaan SKU lalu semua pesanan dengan SKU tersebut dicoba ulang.')
+            ->modalWidth(Width::SevenExtraLarge)
+            ->modalSubmitActionLabel('Simpan pemetaan & coba ulang')
+            ->fillForm(fn (): array => BulkSkuMapping::fill())
+            ->schema(fn (): array => BulkSkuMapping::schema())
+            ->action(fn (array $data) => BulkSkuMapping::handle($data));
     }
 
     private function applySuggestionsAction(): Action

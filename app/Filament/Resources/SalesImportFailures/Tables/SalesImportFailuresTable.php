@@ -5,6 +5,7 @@ namespace App\Filament\Resources\SalesImportFailures\Tables;
 use App\Enums\ImportFailureReason;
 use App\Enums\ImportFailureStatus;
 use App\Exceptions\BusinessRuleException;
+use App\Filament\Actions\BulkSkuMapping;
 use App\Filament\Resources\SalesImportFailures\Pages\ListSalesImportFailures;
 use App\Imports\ImportRegistry;
 use App\Models\ProductVariant;
@@ -13,10 +14,13 @@ use App\Services\SalesOrderImporter;
 use App\Services\SalesOrderSpreadsheet;
 use App\Services\SkuMapping;
 use App\Services\SkuMatcher;
+use App\Support\ApplicationAccess;
 use Filament\Actions\Action;
 use Filament\Actions\ActionGroup;
 use Filament\Actions\BulkAction;
 use Filament\Actions\BulkActionGroup;
+use Filament\Actions\DeleteAction;
+use Filament\Actions\DeleteBulkAction;
 use Filament\Forms\Components\Radio;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
@@ -27,6 +31,7 @@ use Filament\Schemas\Components\Grid;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Text;
 use Filament\Schemas\Components\Utilities\Get;
+use Filament\Support\Enums\Width;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Contracts\HasTable;
@@ -141,10 +146,43 @@ class SalesImportFailuresTable
                         ->color('gray')
                         ->visible(fn (SalesImportFailure $record): bool => $record->status === ImportFailureStatus::Ignored && ImportRegistry::allows($record->importer))
                         ->action(fn (SalesImportFailure $record) => $record->update(['status' => ImportFailureStatus::Open, 'resolved_at' => null])),
+                    // Hapus permanen: khusus admin (izin dicek juga lewat Gate, lihat ApplicationAccess).
+                    DeleteAction::make()
+                        ->label('Hapus')
+                        ->modalHeading('Hapus baris ini?')
+                        ->modalDescription('Baris dihapus permanen dari Import Perlu Dicek dan tidak bisa dicoba ulang lagi. Data yang sudah tersimpan tidak terpengaruh. Untuk sekadar menyembunyikan, pakai Abaikan.')
+                        ->visible(fn (): bool => ApplicationAccess::allows('administrator')),
                 ]),
             ])
             ->toolbarActions([
                 BulkActionGroup::make([
+                    BulkAction::make('bulkMapSkuSelected')
+                        // Tiap baris impor disimpan dalam transaksinya sendiri; jangan dibungkus transaksi panel (ribuan baris = lock habis).
+                        ->databaseTransaction(false)
+                        ->label('Petakan SKU massal')
+                        ->icon(Heroicon::OutlinedQueueList)
+                        ->color('primary')
+                        ->visible(fn (): bool => ImportRegistry::allows(ImportRegistry::SALES_ORDERS))
+                        ->modalHeading('Petakan SKU massal (baris yang dipilih)')
+                        ->modalDescription('1 baris = 1 SKU marketplace dari baris yang dicentang (hanya baris pesanan "SKU tidak ditemukan"). Varian sudah terisi saran sistem; ubah yang salah, lalu centang atau Pilih semua. Setelah disimpan, SEMUA baris gagal dengan SKU yang sama ikut dicoba ulang.')
+                        ->modalWidth(Width::SevenExtraLarge)
+                        ->modalSubmitActionLabel('Simpan pemetaan & coba ulang')
+                        ->fillForm(fn (Collection $records): array => BulkSkuMapping::fill($records->modelKeys()))
+                        ->schema(fn (): array => BulkSkuMapping::schema())
+                        ->deselectRecordsAfterCompletion()
+                        ->action(function (Collection $records, array $data): void {
+                            if ($records->filter(fn (SalesImportFailure $record): bool => self::canMapSku($record))->isEmpty()) {
+                                Notification::make()
+                                    ->title('Tidak ada baris "SKU tidak ditemukan" yang dipilih')
+                                    ->body('Petakan SKU massal hanya untuk baris pesanan yang gagal karena SKU belum dikenal (filter Kategori alasan: SKU tidak ditemukan).')
+                                    ->warning()
+                                    ->send();
+
+                                return;
+                            }
+
+                            BulkSkuMapping::handle($data);
+                        }),
                     BulkAction::make('retrySelected')
                         // Tiap baris impor disimpan dalam transaksinya sendiri; jangan dibungkus transaksi panel (ribuan baris = lock habis).
                         ->databaseTransaction(false)
@@ -198,6 +236,11 @@ class SalesImportFailuresTable
                             ->whereKey($records->filter(fn (SalesImportFailure $record): bool => ImportRegistry::allows($record->importer))->modelKeys())
                             ->where('status', ImportFailureStatus::Open)
                             ->update(['status' => ImportFailureStatus::Ignored, 'resolved_at' => now()])),
+                    DeleteBulkAction::make()
+                        ->label('Hapus yang dipilih')
+                        ->modalHeading('Hapus baris yang dipilih?')
+                        ->modalDescription('Baris dihapus permanen dari Import Perlu Dicek. Data yang sudah tersimpan tidak terpengaruh. Khusus admin.')
+                        ->visible(fn (): bool => ApplicationAccess::allows('administrator')),
                 ]),
             ]);
     }
