@@ -14,7 +14,12 @@ Schedule::command('report:weekly-dashboard')
     ->timezone('Asia/Jakarta')
     ->withoutOverlapping();
 
-Schedule::command('database:backup')->dailyAt('02:00')->timezone('Asia/Jakarta')->withoutOverlapping(30)->when(fn (): bool => config('business.backup_enabled') && config('database.default') === 'pgsql');
+// Backup (spatie/laravel-backup) ke disk lokal + Cloudflare R2; riwayat & kesehatannya di menu Pengaturan > Backup.
+// Perintah lama database:backup tetap ada untuk uji restore manual (--verify).
+$backupEnabled = fn (): bool => (bool) config('business.backup_enabled');
+Schedule::command('backup:clean')->dailyAt('01:30')->timezone('Asia/Jakarta')->withoutOverlapping(30)->when($backupEnabled);
+Schedule::command('backup:run')->dailyAt('02:00')->timezone('Asia/Jakarta')->withoutOverlapping(60)->when($backupEnabled);
+Schedule::command('backup:monitor')->dailyAt('03:00')->timezone('Asia/Jakarta')->when($backupEnabled);
 
 // Tagihan reseller otomatis: pengaman harian (sinkron utama berjalan setiap ada perubahan penjualan / retur).
 Schedule::command('invoices:sync')->dailyAt('01:00')->timezone('Asia/Jakarta')->withoutOverlapping();

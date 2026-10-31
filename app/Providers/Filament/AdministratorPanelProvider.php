@@ -9,6 +9,7 @@ use App\Http\Controllers\DownloadPaymentProof;
 use App\Http\Controllers\DownloadSalesImportFailures;
 use App\Http\Controllers\ShowPrintedTable;
 use BezhanSalleh\FilamentShield\FilamentShieldPlugin;
+use Brimham\FilamentBackupMonitor\Widgets\LatestBackupsWidget;
 use Filament\Actions\Action;
 use Filament\Enums\DatabaseNotificationsPosition;
 use Filament\Enums\GlobalSearchPosition;
@@ -79,6 +80,8 @@ class AdministratorPanelProvider extends PanelProvider
                     ->navigationGroup('Pengaturan')
                     ->navigationSort(2),
             ])
+            // Halaman Backup (App\Filament\Pages\Backups) memakai widget status per tujuan dari brimham/filament-backup-monitor.
+            ->livewireComponents([LatestBackupsWidget::class])
             ->discoverResources(in: app_path('Filament/Resources'), for: 'App\Filament\Resources')
             ->discoverPages(in: app_path('Filament/Pages'), for: 'App\Filament\Pages')
             ->pages([
