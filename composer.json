@@ -7,9 +7,12 @@
     "license": "MIT",
     "require": {
         "php": "^8.3",
+        "bezhansalleh/filament-shield": "*",
+        "brimham/filament-backup-monitor": "^0.1.7",
         "filament/filament": "~4.0",
         "laravel/framework": "^13.17",
         "laravel/tinker": "^3.0",
+        "league/flysystem-aws-s3-v3": "^3.35",
         "spatie/laravel-activitylog": "^5.1",
         "spatie/laravel-permission": "^8.3"
     },
