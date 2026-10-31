@@ -15,6 +15,7 @@ use App\Services\SalesDashboardService;
 use App\Services\SkuMatcher;
 use App\Support\ApplicationAccess;
 use Filament\Forms\Components\TextInput;
+use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Foundation\DevCommands;
@@ -48,6 +49,11 @@ class AppServiceProvider extends ServiceProvider
         if ($this->app->environment('local')) {
             DevCommands::artisan('schedule:work', 'scheduler');
         }
+
+        // Semua tabel panel: 25 baris per halaman (tabel yang mengatur sendiri tetap memakai pengaturannya).
+        Table::configureUsing(fn (Table $table): Table => $table
+            ->paginationPageOptions([10, 25, 50, 100])
+            ->defaultPaginationPageOption(25));
 
         Gate::before(function (User $user, string $ability, array $arguments): ?bool {
             if (! $user->is_active || ! $user->isKonveksiStaff()) {
