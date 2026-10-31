@@ -10,6 +10,7 @@ use App\Models\StockOpname;
 use App\Models\StockOpnameItem;
 use App\Models\Store;
 use App\Services\SalesDashboardService;
+use App\Services\SupplierBilling;
 use App\Support\DocumentNumber;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Arr;
@@ -45,7 +46,10 @@ class BusinessRecordObserver
         if ($model instanceof Setting && $model->key === 'supplier_billing_start' && strtotime((string) $model->value) === false) {
             throw new BusinessRuleException('Tanggal mulai tagihan supplier harus tanggal (YYYY-MM-DD).');
         }
-        if ($model instanceof Setting && ! in_array($model->key, ['report_emails', 'supplier_billing_start'], true)) {
+        if ($model instanceof Setting && $model->key === 'supplier_billing_mode' && ! in_array($model->value, [SupplierBilling::MODE_SALES, SupplierBilling::MODE_STOCK], true)) {
+            throw new BusinessRuleException('Mode tagihan supplier harus "'.SupplierBilling::MODE_SALES.'" atau "'.SupplierBilling::MODE_STOCK.'".');
+        }
+        if ($model instanceof Setting && ! in_array($model->key, ['report_emails', 'supplier_billing_start', 'supplier_billing_mode'], true)) {
             $value = $model->value;
             if (! is_numeric($value) || (float) $value < 0) {
                 throw new BusinessRuleException('Nilai pengaturan harus angka yang tidak negatif.');

@@ -13,6 +13,7 @@ use App\Support\ApplicationAccess;
 use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Forms\Components\DatePicker;
+use Filament\Forms\Components\Radio;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
@@ -58,9 +59,18 @@ class SupplierBills extends Page implements HasTable
     public function getSubheading(): ?string
     {
         $unallocated = app(SupplierStatement::class)->unallocated();
+        $billing = app(SupplierBilling::class);
+        $start = Carbon::parse($billing->startDate())->format('d/m/Y');
+
+        if ($billing->billsBySales()) {
+            return "Mode BERDASARKAN BARANG KELUAR: setiap pesanan Selesai produk beli jadi mulai {$start} langsung ditagihkan ke supplier di Model Produk, "
+                .'dengan harga beli (HPP tanpa packing) yang berlaku pada tanggal pesanan. Stok Barang Masuk tidak dipakai. '
+                .'Titipan grosir bordir diteruskan utuh ke supplier.'
+                .($unallocated['qty'] > 0 ? " {$unallocated['qty']} pcs ({$unallocated['variants']} SKU) belum ada supplier — isi Supplier di Model Produk, tagihan otomatis pindah." : '');
+        }
 
         return 'Tagihan dihitung otomatis dari pesanan Selesai produk beli jadi (FIFO lot Barang Masuk) mulai '
-            .Carbon::parse(app(SupplierBilling::class)->startDate())->format('d/m/Y').'. '
+            .$start.'. '
             .'Titipan grosir bordir diteruskan utuh ke supplier.'
             .($unallocated['qty'] > 0 ? " {$unallocated['qty']} pcs ({$unallocated['variants']} SKU) belum teralokasi karena stok minus — otomatis ditagihkan saat Barang Masuk berikutnya." : '');
     }
@@ -160,15 +170,26 @@ class SupplierBills extends Page implements HasTable
                 ->color('gray')
                 ->visible(fn (): bool => ApplicationAccess::allows('administrator'))
                 ->requiresConfirmation()
-                ->modalDescription('Semua lot & tagihan dihitung ulang dari Barang Masuk Beli Jadi dan pesanan Selesai (FIFO). Stok sebelum tanggal mulai ikut dipakai, tetapi hanya pesanan mulai tanggal ini yang ditagihkan. Pembayaran tidak berubah.')
+                ->modalDescription('Semua tagihan dihitung ulang dari pesanan Selesai sesuai mode yang dipilih. Pembayaran tidak berubah.')
                 ->schema([
+                    Radio::make('mode')
+                        ->label('Dasar tagihan')
+                        ->options(SupplierBilling::MODES)
+                        ->descriptions([
+                            SupplierBilling::MODE_SALES => 'Sementara, selama stok barang jadi belum diinput: tiap barang keluar ditagihkan ke supplier di Model Produk dengan harga beli pada tanggal pesanan.',
+                            SupplierBilling::MODE_STOCK => 'Barang keluar mengambil lot Barang Masuk Beli Jadi tertua (FIFO); supplier & harga dari lot tersebut.',
+                        ])
+                        ->default(fn (): string => app(SupplierBilling::class)->mode())
+                        ->required(),
                     DatePicker::make('from')->label('Tagihkan pesanan mulai')->default(fn (): string => app(SupplierBilling::class)->startDate())->required(),
                 ])
                 ->action(function (array $data, SupplierBilling $billing): void {
-                    $result = $billing->rebuild($data['from']);
+                    $result = $billing->rebuild($data['from'], $data['mode']);
                     Notification::make()
                         ->title('Tagihan supplier dihitung ulang')
-                        ->body("{$result['lots']} lot, {$result['lines']} baris tagihan, {$result['unallocated']} pcs belum teralokasi.")
+                        ->body($billing->billsBySales()
+                            ? "{$result['lines']} baris tagihan. {$result['unallocated']} pcs belum ada supplier (isi di Model Produk), {$result['no_price']} pcs belum ada harga beli."
+                            : "{$result['lots']} lot, {$result['lines']} baris tagihan, {$result['unallocated']} pcs belum teralokasi.")
                         ->success()
                         ->send();
                 }),

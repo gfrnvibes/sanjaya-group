@@ -7,6 +7,7 @@ use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Schemas\Components\Section;
+use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Schema;
 
 class ProductModelForm
@@ -44,7 +45,19 @@ class ProductModelForm
                             ->label('Jenis')
                             ->options(ProductKind::class)
                             ->default(ProductKind::Produksi)
+                            ->live()
                             ->required(),
+                        Select::make('supplier_id')
+                            ->label('Supplier')
+                            ->relationship('supplier', 'name')
+                            ->searchable()
+                            ->preload()
+                            ->helperText('Penerima tagihan barang keluar model beli jadi ini (Tagihan Supplier mode berdasarkan barang keluar).')
+                            ->visible(fn (Get $get): bool => in_array($get('kind'), [ProductKind::BeliJadi, ProductKind::BeliJadi->value], true))
+                            ->createOptionForm([
+                                TextInput::make('name')->label('Nama supplier')->required()->maxLength(120),
+                                TextInput::make('phone')->label('No HP')->maxLength(30),
+                            ]),
                         TextInput::make('default_margin_pct')
                             ->label('Margin Default')
                             ->helperText('Kosong = pakai pengaturan margin_default (produksi) atau margin_ready_made_pct, default 5% (beli jadi).')

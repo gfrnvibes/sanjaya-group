@@ -1,19 +1,23 @@
 <?php
 
 use App\Enums\GoodsReceiptSource;
+use App\Exceptions\BusinessRuleException;
 use App\Filament\Pages\SupplierBills;
 use App\Models\Color;
 use App\Models\GoodsReceipt;
 use App\Models\KonveksiMonthlyProfit;
 use App\Models\ProductModel;
 use App\Models\ProductVariant;
+use App\Models\ResellerPriceHistory;
 use App\Models\SalesOrderItem;
+use App\Models\Setting;
 use App\Models\StockLot;
 use App\Models\Supplier;
 use App\Models\SupplierBillLine;
 use App\Models\SupplierPayment;
 use App\Models\SupplierWholesalePrice;
 use App\Models\User;
+use App\Models\VariantCost;
 use App\Services\CostingService;
 use App\Services\InventoryService;
 use App\Services\PricingService;
@@ -291,4 +295,68 @@ it('keeps billing the supplier for damaged or lost returns, wholesale consignmen
     // Barang rusak/hilang tetap ditagih: titipan 12 x 13.000 + normal 2 x 15.000.
     expect(billsBySupplier())->toBe(['Rendi' => 156000.0 + 30000.0])
         ->and(StockLot::query()->value('qty_remaining'))->toBe(36);
+});
+
+// ---------------------------------------------------------------- mode berdasarkan barang keluar (tanpa stok)
+
+/**
+ * Harga beli (HPP beli jadi tanpa packing) + harga reseller berlaku mulai $date, tanpa Barang Masuk.
+ *
+ * @param  array<string, mixed>  $f
+ */
+function readyMadePriceFrom(array $f, float $purchase, string $date): void
+{
+    $cost = VariantCost::create(['variant_id' => $f['rm']->id, 'effective_from' => $date, 'material_cost' => $purchase, 'labor_cost' => 3000, 'packing_cost' => 3000, 'source' => 'manual']);
+    ResellerPriceHistory::create(['variant_id' => $f['rm']->id, 'effective_from' => $date, 'base_price' => $purchase + 10000, 'variant_cost_id' => $cost->id, 'source' => 'manual']);
+}
+
+function billBySales(): void
+{
+    Setting::updateOrCreate(['key' => 'supplier_billing_mode'], ['value' => SupplierBilling::MODE_SALES]);
+}
+
+it('bills goods out to the model supplier at the purchase price of the order date, without any stock', function () {
+    $f = supplierFixture();
+    billBySales();
+    $f['rmModel']->update(['supplier_id' => $f['rudi']->id]);
+    readyMadePriceFrom($f, 20000, '2026-08-01');
+    readyMadePriceFrom($f, 25000, '2026-09-01');
+
+    sellReadyMade($f, 3, '2026-08-10');
+    sellReadyMade($f, 2, '2026-09-05');
+
+    expect(billsBySupplier())->toBe(['Rudi' => 110000.0]) // 3 x 20.000 + 2 x 25.000, packing tidak ditagihkan
+        ->and(StockLot::query()->count())->toBe(0);
+});
+
+it('waits for the model supplier, then moves the goods-out bill to it automatically', function () {
+    $f = supplierFixture();
+    billBySales();
+    readyMadePriceFrom($f, 20000, '2026-08-01');
+    $item = sellReadyMade($f, 4, '2026-08-10');
+
+    expect(app(SupplierStatement::class)->unallocated()['qty'])->toBe(4)
+        ->and(billsBySupplier())->toBe([]);
+
+    $f['rmModel']->update(['supplier_id' => $f['andi']->id]);
+    expect(billsBySupplier())->toBe(['Andi' => 80000.0]);
+
+    app(SalesOrderService::class)->cancel($item->salesOrder);
+    expect(SupplierBillLine::query()->count())->toBe(0);
+});
+
+it('switches to goods-out billing on rebuild and rejects an unknown mode', function () {
+    $f = supplierFixture();
+    $f['rmModel']->update(['supplier_id' => $f['rudi']->id]);
+    readyMadePriceFrom($f, 20000, '2026-08-01');
+    sellReadyMade($f, 2, '2026-08-10'); // mode stok: tanpa lot = belum teralokasi
+
+    expect(billsBySupplier())->toBe([]);
+
+    $result = app(SupplierBilling::class)->rebuild('2026-08-01', SupplierBilling::MODE_SALES);
+
+    expect($result['lines'])->toBe(1)
+        ->and($result['unallocated'])->toBe(0)
+        ->and(billsBySupplier())->toBe(['Rudi' => 40000.0])
+        ->and(fn () => Setting::updateOrCreate(['key' => 'supplier_billing_mode'], ['value' => 'apa']))->toThrow(BusinessRuleException::class);
 });
