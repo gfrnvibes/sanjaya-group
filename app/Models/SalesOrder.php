@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\SalesOrderStatus;
+use App\Services\InvoiceSync;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -18,6 +19,16 @@ class SalesOrder extends Model
     protected $attributes = [
         'status' => 'completed',
     ];
+
+    protected static function booted(): void
+    {
+        // Batal / tanggal berubah: draft tagihan otomatis dirapikan (draft kosong dihapus).
+        static::updated(function (SalesOrder $order): void {
+            if ($order->wasChanged(['status', 'order_date', 'store_id'])) {
+                InvoiceSync::afterResponse();
+            }
+        });
+    }
 
     protected function casts(): array
     {

@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\ReturnReason;
+use App\Services\InvoiceSync;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -15,6 +16,14 @@ use Illuminate\Database\Eloquent\Relations\MorphMany;
 #[Fillable(['sales_order_item_id', 'returned_at', 'qty', 'reason', 'restock', 'warehouse_id', 'credit_reseller', 'reseller_invoice_id', 'note', 'created_by', 'refund_amount'])]
 class SalesReturn extends Model
 {
+    protected static function booted(): void
+    {
+        // Retur yang mengurangi tagihan reseller ikut masuk draft tagihan otomatis.
+        static::saved(function (): void {
+            InvoiceSync::afterResponse();
+        });
+    }
+
     protected function casts(): array
     {
         return [

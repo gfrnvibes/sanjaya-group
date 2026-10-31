@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\InvoiceCycle;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -13,7 +14,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 /**
  * RESELLER / brand milik seorang PEMILIK.
  */
-#[Fillable(['owner_id', 'name', 'opening_balance', 'opening_balance_date', 'is_active'])]
+#[Fillable(['owner_id', 'name', 'opening_balance', 'opening_balance_date', 'invoice_cycle', 'invoice_cycle_day', 'is_active'])]
 class Reseller extends Model
 {
     use SoftDeletes;
@@ -23,6 +24,8 @@ class Reseller extends Model
         return [
             'opening_balance' => 'decimal:2',
             'opening_balance_date' => 'date',
+            'invoice_cycle' => InvoiceCycle::class, // null = ikuti pengaturan umum tagihan otomatis
+            'invoice_cycle_day' => 'integer',
             'is_active' => 'boolean',
         ];
     }

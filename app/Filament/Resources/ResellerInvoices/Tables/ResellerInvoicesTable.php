@@ -25,6 +25,7 @@ class ResellerInvoicesTable
             ->columns([
                 TextColumn::make('invoice_no')
                     ->label('No. Tagihan')
+                    ->description(fn (ResellerInvoice $record): ?string => $record->is_auto ? 'Otomatis' : null)
                     ->searchable()
                     ->sortable(),
                 TextColumn::make('reseller.name')

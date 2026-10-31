@@ -15,3 +15,6 @@ Schedule::command('report:weekly-dashboard')
     ->withoutOverlapping();
 
 Schedule::command('database:backup')->dailyAt('02:00')->timezone('Asia/Jakarta')->withoutOverlapping(30)->when(fn (): bool => config('business.backup_enabled') && config('database.default') === 'pgsql');
+
+// Tagihan reseller otomatis: pengaman harian (sinkron utama berjalan setiap ada perubahan penjualan / retur).
+Schedule::command('invoices:sync')->dailyAt('01:00')->timezone('Asia/Jakarta')->withoutOverlapping();

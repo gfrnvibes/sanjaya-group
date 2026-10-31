@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\InvoiceSync;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\WithoutTimestamps;
 use Illuminate\Database\Eloquent\Model;
@@ -21,6 +22,14 @@ use Illuminate\Database\Eloquent\Relations\MorphMany;
 ])]
 class SalesOrderItem extends Model
 {
+    protected static function booted(): void
+    {
+        // Penjualan baru / dilepas dari tagihan: tagihan reseller otomatis disinkronkan setelah respons.
+        static::saved(function (): void {
+            InvoiceSync::afterResponse();
+        });
+    }
+
     protected function casts(): array
     {
         return [

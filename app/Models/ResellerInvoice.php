@@ -12,11 +12,12 @@ use Illuminate\Support\Facades\DB;
 /**
  * TAGIHAN konveksi -> reseller per periode.
  */
-#[Fillable(['reseller_id', 'invoice_no', 'period_start', 'period_end', 'issued_at', 'due_date', 'status', 'note', 'created_by'])]
+#[Fillable(['reseller_id', 'invoice_no', 'period_start', 'period_end', 'issued_at', 'due_date', 'status', 'is_auto', 'note', 'created_by'])]
 class ResellerInvoice extends Model
 {
     protected $attributes = [
         'status' => 'draft',
+        'is_auto' => false,
     ];
 
     protected function casts(): array
@@ -27,6 +28,7 @@ class ResellerInvoice extends Model
             'issued_at' => 'date',
             'due_date' => 'date',
             'status' => ResellerInvoiceStatus::class,
+            'is_auto' => 'boolean', // draft dibuat otomatis oleh InvoiceSync
         ];
     }
 

@@ -47,8 +47,19 @@ class InvoiceService
             $invoice = ResellerInvoice::query()->lockForUpdate()->findOrFail($invoice->id);
             $this->ensureDraft($invoice);
 
+            // Baris belum ditagih + baris di draft OTOMATIS reseller ini (tagihan manual mengambil alih periodenya).
+            $autoDrafts = ResellerInvoice::query()
+                ->where('reseller_id', $invoice->reseller_id)
+                ->where('status', ResellerInvoiceStatus::Draft)
+                ->where('is_auto', true)
+                ->whereKeyNot($invoice->id)
+                ->pluck('id')
+                ->all();
+            $unbilled = fn (Builder $query) => $query->whereNull('reseller_invoice_id')
+                ->when($autoDrafts !== [], fn (Builder $query) => $query->orWhereIn('reseller_invoice_id', $autoDrafts));
+
             $items = SalesOrderItem::query()
-                ->whereNull('reseller_invoice_id')
+                ->where($unbilled)
                 ->whereHas('salesOrder', fn (Builder $order) => $order
                     ->where('status', '!=', SalesOrderStatus::Cancelled)
                     ->whereBetween('order_date', [$invoice->period_start, $invoice->period_end])
@@ -56,11 +67,14 @@ class InvoiceService
                 ->update(['reseller_invoice_id' => $invoice->id]);
 
             $returns = SalesReturn::query()
-                ->whereNull('reseller_invoice_id')
+                ->where($unbilled)
                 ->where('credit_reseller', true)
                 ->whereBetween('returned_at', [$invoice->period_start, $invoice->period_end])
                 ->whereHas('salesOrderItem.salesOrder.store', fn (Builder $store) => $store->where('reseller_id', $invoice->reseller_id))
                 ->update(['reseller_invoice_id' => $invoice->id]);
+
+            // Draft otomatis yang kosong setelah diambil alih dihapus.
+            ResellerInvoice::query()->whereKey($autoDrafts)->whereDoesntHave('items')->whereDoesntHave('returns')->delete();
 
             return $items + $returns;
         });
