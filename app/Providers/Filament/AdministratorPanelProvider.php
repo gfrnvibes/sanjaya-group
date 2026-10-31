@@ -9,6 +9,8 @@ use App\Http\Controllers\DownloadPaymentProof;
 use App\Http\Controllers\DownloadSalesImportFailures;
 use App\Http\Controllers\ShowPrintedTable;
 use Filament\Actions\Action;
+use Filament\Enums\DatabaseNotificationsPosition;
+use Filament\Enums\GlobalSearchPosition;
 use Filament\Http\Middleware\Authenticate;
 use Filament\Http\Middleware\AuthenticateSession;
 use Filament\Http\Middleware\DisableBladeIconComponents;
@@ -43,10 +45,16 @@ class AdministratorPanelProvider extends PanelProvider
             ->databaseTransactions()
             ->brandName('Sanjaya Konveksi')
             ->colors([
-                'primary' => Color::Amber,
+                'primary' => Color::Emerald,
             ])
+            // Tampilan "Sharp + Compact": tanpa topbar (halaman lebih luas); pencarian, notifikasi & menu user di sidebar.
+            ->topbar(false)
+            ->font('Inter')
+            ->monoFont('JetBrains Mono')
+            ->globalSearch(position: GlobalSearchPosition::Sidebar)
+            ->globalSearchKeyBindings(['mod+k'])
             ->sidebarCollapsibleOnDesktop()
-            ->databaseNotifications() // lonceng: baris import yang perlu dicek
+            ->databaseNotifications(position: DatabaseNotificationsPosition::Sidebar) // lonceng: baris import yang perlu dicek
             ->databaseNotificationsPolling('60s')
             ->navigationGroups([
                 NavigationGroup::make('Penjualan'),
@@ -71,7 +79,7 @@ class AdministratorPanelProvider extends PanelProvider
             ])
             ->discoverWidgets(in: app_path('Filament/Widgets'), for: 'App\Filament\Widgets')
             ->widgets([
-                AccountWidget::class,
+                // AccountWidget::class,
             ])
             ->middleware([
                 EncryptCookies::class,
@@ -100,6 +108,7 @@ class AdministratorPanelProvider extends PanelProvider
                     ->url(fn (): string => DisplaySettings::getUrl()),
             ])
             ->maxContentWidth(fn (): Width => auth()->user()?->layout_width?->width() ?? Width::SevenExtraLarge)
+            ->renderHook(PanelsRenderHook::STYLES_AFTER, fn (): View => view('filament.theme-sharp'))
             ->renderHook(
                 PanelsRenderHook::STYLES_AFTER,
                 fn (): string => auth()->user()?->table_density === TableDensity::Compact
