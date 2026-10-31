@@ -19,7 +19,9 @@ export default defineConfig({
     ],
     server: {
         watch: {
-            ignored: ['**/storage/framework/views/**'],
+            // vendor/ & storage/ tidak perlu dipantau; di drive exFAT watcher mengunci folder
+            // sehingga composer require dan folder sementara backup (storage/app/backup-temp) gagal dihapus.
+            ignored: ['**/storage/**', '**/vendor/**'],
         },
     },
 });
