@@ -167,16 +167,14 @@ class SalesImportFailuresTable
                         ->modalDescription('1 baris = 1 SKU marketplace dari baris yang dicentang (hanya baris pesanan "SKU tidak ditemukan"). Varian sudah terisi saran sistem; ubah yang salah, lalu centang atau Pilih semua. Setelah disimpan, SEMUA baris gagal dengan SKU yang sama ikut dicoba ulang.')
                         ->modalWidth(Width::SevenExtraLarge)
                         ->modalSubmitActionLabel('Simpan pemetaan & coba ulang')
+                        // Tidak ada SKU yang perlu dipetakan di baris terpilih: lewati modal, langsung jelaskan alasannya.
+                        ->modalHidden(fn (Collection $records, SkuMapping $mapping): bool => ! $mapping->hasUnmapped($records->modelKeys()))
                         ->fillForm(fn (Collection $records): array => BulkSkuMapping::fill($records->modelKeys()))
                         ->schema(fn (): array => BulkSkuMapping::schema())
                         ->deselectRecordsAfterCompletion()
-                        ->action(function (Collection $records, array $data): void {
-                            if ($records->filter(fn (SalesImportFailure $record): bool => self::canMapSku($record))->isEmpty()) {
-                                Notification::make()
-                                    ->title('Tidak ada baris "SKU tidak ditemukan" yang dipilih')
-                                    ->body('Petakan SKU massal hanya untuk baris pesanan yang gagal karena SKU belum dikenal (filter Kategori alasan: SKU tidak ditemukan).')
-                                    ->warning()
-                                    ->send();
+                        ->action(function (Collection $records, array $data, SkuMapping $mapping): void {
+                            if (! $mapping->hasUnmapped($records->modelKeys())) {
+                                self::notifyNothingToMap($records);
 
                                 return;
                             }
@@ -412,6 +410,32 @@ class SalesImportFailuresTable
     }
 
     // ---------------------------------------------------------------- bantuan
+
+    /**
+     * Baris terpilih tidak punya SKU yang perlu dipetakan (mis. SKU-nya sudah terpetakan dan kini gagal karena harga):
+     * tampilkan rincian alasan agar admin tahu langkah berikutnya.
+     */
+    private static function notifyNothingToMap(Collection $records): void
+    {
+        $reasons = $records
+            ->where('status', ImportFailureStatus::Open)
+            ->groupBy(fn (SalesImportFailure $record): string => $record->reason->value)
+            ->map(fn (Collection $group): array => [$group->first()->reason, $group->count()])
+            ->sortByDesc(fn (array $item): int => $item[1])
+            ->values();
+
+        $body = $reasons->isEmpty()
+            ? 'Baris yang dipilih sudah tidak terbuka.'
+            : 'Alasan gagal baris yang dipilih: '.$reasons->map(fn (array $item): string => $item[0]->getLabel().' ('.$item[1].')')->implode(', ').'. '
+                .'SKU-nya sudah dikenali, jadi tidak perlu dipetakan lagi. Langkah berikutnya: '.$reasons->first()[0]->hint();
+
+        Notification::make()
+            ->title('Tidak ada SKU yang perlu dipetakan di baris yang dipilih')
+            ->body($body)
+            ->warning()
+            ->persistent()
+            ->send();
+    }
 
     private static function isRetryable(SalesImportFailure $record): bool
     {

@@ -18,6 +18,7 @@ use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\ToggleButtons;
 use Filament\Notifications\Notification;
 use Filament\Schemas\Components\Component;
+use Filament\Schemas\Components\Text;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
 use Illuminate\Database\Eloquent\Builder;
@@ -56,8 +57,12 @@ class BulkSkuMapping
     public static function schema(): array
     {
         return [
+            Text::make('Tidak ada SKU yang perlu dipetakan: SKU di baris-baris ini sudah dikenali sistem. Bila masih gagal, alasannya lain (mis. harga reseller belum ada) — lihat kolom Alasan di daftar.')
+                ->color('warning')
+                ->visible(fn (Get $get): bool => blank($get('skus'))),
             ToggleButtons::make('select')
                 ->label('Centang')
+                ->visible(fn (Get $get): bool => filled($get('skus')))
                 ->options([
                     'all' => 'Pilih semua',
                     'confident' => 'Saran yakin saja (>= '.SkuMatcher::HIGH_CONFIDENCE.'%)',
@@ -76,6 +81,7 @@ class BulkSkuMapping
                     ->all())),
             Repeater::make('skus')
                 ->hiddenLabel()
+                ->visible(fn (Get $get): bool => filled($get('skus')))
                 ->addable(false)
                 ->deletable(false)
                 ->reorderable(false)

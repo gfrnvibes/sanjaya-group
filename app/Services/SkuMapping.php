@@ -147,7 +147,7 @@ class SkuMapping
      */
     public function plan(): array
     {
-        $known = $this->resolvableFailures()->modelKeys();
+        $known = $this->resolvableFailures()->pluck('id')->all();
 
         return $this->openSkuFailures()
             ->when($known !== [], fn (Builder $query) => $query->whereKeyNot($known))
@@ -173,6 +173,22 @@ class SkuMapping
     }
 
     /**
+     * Ada SKU marketplace yang masih perlu dipetakan (di baris tertentu, atau di semua baris)? Versi ringan unmappedSkus().
+     *
+     * @param  list<int>|null  $failureIds
+     */
+    public function hasUnmapped(?array $failureIds = null): bool
+    {
+        $known = $this->resolvableFailures()->pluck('id')->all();
+
+        return $this->openSkuFailures()
+            ->when($failureIds !== null, fn (Builder $query) => $query->whereKey($failureIds))
+            ->when($known !== [], fn (Builder $query) => $query->whereKeyNot($known))
+            ->whereRaw("coalesce(\"values\"->>'SKU BIG SELLER', '') <> ''")
+            ->exists();
+    }
+
+    /**
      * Daftar SKU marketplace yang gagal (1 baris per SKU, terbanyak dulu) untuk pemetaan massal,
      * lengkap dengan contoh nama produk / variasi dan saran varian terbaik.
      *
@@ -182,7 +198,7 @@ class SkuMapping
     public function unmappedSkus(?array $failureIds = null): array
     {
         // SKU yang sudah dipetakan di tempat lain tidak perlu dipetakan lagi (cukup dicoba ulang).
-        $known = $this->resolvableFailures()->modelKeys();
+        $known = $this->resolvableFailures()->pluck('id')->all();
 
         return $this->openSkuFailures()
             ->when($failureIds !== null, fn (Builder $query) => $query->whereKey($failureIds))

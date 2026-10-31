@@ -1,5 +1,6 @@
 <?php
 
+use App\Enums\ImportFailureReason;
 use App\Enums\ImportFailureStatus;
 use App\Filament\Resources\SalesImportFailures\Pages\ListSalesImportFailures;
 use App\Models\SalesImportFailure;
@@ -200,4 +201,28 @@ it('retries matching failed rows after a mapping is saved from any menu', functi
 
     expect(SalesOrder::query()->count())->toBe(2)
         ->and(SalesImportFailure::query()->open()->count())->toBe(1);
+});
+
+it('opens the page and lists SKUs when there are no failed SKU rows', function () {
+    businessFixture();
+    actingAsAdmin();
+
+    expect(app(SkuMapping::class)->unmappedSkus())->toBe([])
+        ->and(app(SkuMapping::class)->plan())->toBe([]);
+
+    Livewire::test(ListSalesImportFailures::class)->assertOk();
+});
+
+it('explains instead of opening an empty form when the selected rows need no SKU mapping', function () {
+    $f = businessFixture();
+    failedSkuRows($f);
+    actingAsAdmin();
+    SalesImportFailure::query()->update(['reason' => ImportFailureReason::PriceMissing]);
+
+    Livewire::test(ListSalesImportFailures::class)
+        ->selectTableRecords(SalesImportFailure::query()->pluck('id')->all())
+        ->callAction(TestAction::make('bulkMapSkuSelected')->table()->bulk())
+        ->assertNotified('Tidak ada SKU yang perlu dipetakan di baris yang dipilih');
+
+    expect(SkuAlias::query()->count())->toBe(0);
 });
