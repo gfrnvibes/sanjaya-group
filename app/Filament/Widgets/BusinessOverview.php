@@ -21,6 +21,9 @@ class BusinessOverview extends StatsOverviewWidget
 
     protected static ?int $sort = 1;
 
+    /** Maks. 4 kolom agar nominal rupiah tidak terpotong. */
+    protected int|array|null $columns = ['default' => 1, 'sm' => 2, 'lg' => 3, 'xl' => 4];
+
     protected function getStats(): array
     {
         $month = today()->startOfMonth();

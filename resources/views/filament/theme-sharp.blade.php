@@ -30,9 +30,14 @@
     .fi-section-header-heading { font-size: 0.875rem; font-weight: 600; }
 
     /* ---------- statistik (kartu ringkasan) */
-    .fi-wi-stats-overview-stat { padding: calc(var(--spacing) * 4); }
+    .fi-wi-stats-overview-stat { padding: calc(var(--spacing) * 3) calc(var(--spacing) * 4); min-width: 0; }
+    .fi-wi-stats-overview-stat-content { row-gap: calc(var(--spacing) * 1); }
     .fi-wi-stats-overview-stat-label { font-size: 0.6875rem; font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; color: var(--gray-500); }
-    .fi-wi-stats-overview-stat-value { font-family: var(--mono-font-family), ui-monospace, monospace; font-size: 1.625rem; line-height: 2.125rem; font-weight: 600; letter-spacing: -0.02em; }
+    /* nominal mengecil mengikuti lebar layar & tidak keluar kartu */
+    .fi-wi-stats-overview-stat-value {
+        font-family: var(--mono-font-family), ui-monospace, monospace; font-size: clamp(1.125rem, 1.4vw, 1.375rem); line-height: 1.75rem;
+        font-weight: 600; letter-spacing: -0.03em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
     .fi-wi-stats-overview-stat-description { font-size: 0.75rem; }
 
     /* ---------- tabel */

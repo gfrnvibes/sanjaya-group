@@ -37,6 +37,16 @@ class BalanceSheetService
     }
 
     /**
+     * Neraca konveksi saja (ringkasan dashboard), tanpa menghitung semua toko.
+     *
+     * @return array{label: string, assets: list<array{label: string, amount: float}>, liabilities: list<array{label: string, amount: float}>, equity: list<array{label: string, amount: float}>, ytd_profit: float}
+     */
+    public function konveksiSheet(Carbon $asOf): array
+    {
+        return $this->konveksi($asOf->copy()->startOfDay());
+    }
+
+    /**
      * @param  list<array{label: string, amount: float}>  $lines
      */
     public static function total(array $lines): float
