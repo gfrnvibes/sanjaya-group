@@ -11,10 +11,10 @@ use Filament\Resources\Resource;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\Summarizers\Sum;
 use Filament\Tables\Columns\TextColumn;
-use Filament\Tables\Filters\Filter;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Number;
 use UnitEnum;
 
 class ResellerReceivableResource extends Resource
@@ -32,6 +32,19 @@ class ResellerReceivableResource extends Resource
     protected static ?string $pluralModelLabel = 'Piutang Reseller';
 
     protected static ?string $slug = 'laporan/piutang-reseller';
+
+    public const BALANCE_OUTSTANDING = 'outstanding';
+
+    public const BALANCE_DEPOSIT = 'deposit';
+
+    public const BALANCE_SETTLED = 'settled';
+
+    /** Filter saldo: piutang (> 0), deposit reseller di konveksi (sisa piutang < 0), lunas (= 0). */
+    public const BALANCES = [
+        self::BALANCE_OUTSTANDING => 'Masih ada piutang',
+        self::BALANCE_DEPOSIT => 'Deposit (lebih bayar)',
+        self::BALANCE_SETTLED => 'Lunas (saldo 0)',
+    ];
 
     public static function canCreate(): bool
     {
@@ -71,6 +84,10 @@ class ResellerReceivableResource extends Resource
                     ->money('IDR', decimalPlaces: 0)
                     ->weight('bold')
                     ->color(fn ($state): string => (float) $state > 0 ? 'danger' : 'success')
+                    // sisa negatif = reseller membayar lebih: deposit di konveksi
+                    ->description(fn (ResellerReceivable $record): ?string => (float) $record->outstanding < 0
+                        ? 'Deposit '.Number::currency(-(float) $record->outstanding, 'IDR', 'id', 0)
+                        : null)
                     ->sortable()
                     ->summarize(Sum::make()->money('IDR', decimalPlaces: 0)->label('Total')),
             ])
@@ -79,10 +96,17 @@ class ResellerReceivableResource extends Resource
                     ->label('Pemilik')
                     ->relationship('owner', 'name')
                     ->preload(),
-                Filter::make('has_outstanding')
-                    ->label('Masih ada piutang')
-                    ->default()
-                    ->query(fn (Builder $query): Builder => $query->where('outstanding', '>', 0)),
+                SelectFilter::make('balance')
+                    ->label('Saldo')
+                    ->options(self::BALANCES)
+                    ->default(self::BALANCE_OUTSTANDING)
+                    ->placeholder('Semua reseller')
+                    ->query(fn (Builder $query, array $data): Builder => match ($data['value'] ?? null) {
+                        self::BALANCE_OUTSTANDING => $query->where('outstanding', '>', 0),
+                        self::BALANCE_DEPOSIT => $query->where('outstanding', '<', 0),
+                        self::BALANCE_SETTLED => $query->where('outstanding', 0),
+                        default => $query,
+                    }),
             ])
             ->recordActions([
                 Action::make('openReseller')
