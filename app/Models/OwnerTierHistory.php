@@ -2,7 +2,9 @@
 
 namespace App\Models;
 
+use App\Observers\TierObserver;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Attributes\ObservedBy;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
@@ -10,6 +12,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * Tier per PEMILIK + BERLAKU MULAI.
  */
 #[Fillable(['owner_id', 'price_tier_id', 'effective_from', 'note'])]
+#[ObservedBy(TierObserver::class)]
 class OwnerTierHistory extends Model
 {
     protected function casts(): array

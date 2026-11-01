@@ -35,6 +35,7 @@ class TierHistoriesRelationManager extends RelationManager
                 DatePicker::make('effective_from')
                     ->label('Berlaku Mulai')
                     ->default(today())
+                    ->helperText('Langsung berlaku: penjualan mulai tanggal ini yang belum masuk tagihan terbit otomatis memakai harga tier baru.')
                     ->required(),
                 TextInput::make('note')
                     ->label('Catatan')

@@ -2,7 +2,9 @@
 
 namespace App\Models;
 
+use App\Observers\TierObserver;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Attributes\ObservedBy;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
@@ -10,6 +12,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * TIER 1/2/3: adjustment_pct 0.0500 = harga dasar +5%.
  */
 #[Fillable(['code', 'name', 'adjustment_pct'])]
+#[ObservedBy(TierObserver::class)]
 class PriceTier extends Model
 {
     protected function casts(): array
