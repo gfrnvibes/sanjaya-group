@@ -49,9 +49,10 @@ class SalesDashboard extends Dashboard
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedPresentationChartBar;
 
-    protected static string|UnitEnum|null $navigationGroup = 'Laporan';
+    /** Tanpa grup: tepat di bawah Dashboard (sort -2) di bagian atas sidebar. */
+    protected static string|UnitEnum|null $navigationGroup = null;
 
-    protected static ?int $navigationSort = 0;
+    protected static ?int $navigationSort = -1;
 
     protected static ?string $navigationLabel = 'Dashboard Produk';
 
