@@ -23,3 +23,6 @@ Schedule::command('backup:monitor')->dailyAt('03:00')->timezone('Asia/Jakarta')-
 
 // Tagihan reseller otomatis: pengaman harian (sinkron utama berjalan setiap ada perubahan penjualan / retur).
 Schedule::command('invoices:sync')->dailyAt('01:00')->timezone('Asia/Jakarta')->withoutOverlapping();
+
+// Buku besar: jurnal otomatis disusun ulang saat laporan dibuka; ini pengaman berkala.
+Schedule::command('ledger:sync')->hourly()->withoutOverlapping();

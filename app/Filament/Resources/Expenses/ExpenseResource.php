@@ -2,7 +2,7 @@
 
 namespace App\Filament\Resources\Expenses;
 
-use App\Enums\PaymentMethod;
+use App\Filament\Forms\Components\ResellerOffsetSelect;
 use App\Filament\Resources\Expenses\Pages\ManageExpenses;
 use App\Models\Expense;
 use BackedEnum;
@@ -51,6 +51,8 @@ class ExpenseResource extends Resource
                     ->relationship('category', 'name')
                     ->preload()
                     ->required()
+                    // Agar laba tidak terpotong dua kali (upah & bahan sudah masuk HPP).
+                    ->helperText('Bukan untuk upah penjahit/potong (catat di Pembayaran Penjahit) atau belanja bahan (catat di Pembelian Bahan): keduanya sudah masuk HPP.')
                     ->createOptionForm([
                         TextInput::make('code')->label('Kode')->required(),
                         TextInput::make('name')->label('Nama')->required(),
@@ -75,16 +77,9 @@ class ExpenseResource extends Resource
                     ->relationship('reseller', 'name')
                     ->searchable()
                     ->preload(),
-                Select::make('reseller_payment_id')
+                ResellerOffsetSelect::make()
                     ->label('Dibayar Reseller (Potongan Biaya)')
-                    ->relationship(
-                        'resellerPayment',
-                        'id',
-                        fn (Builder $query) => $query->with('reseller')->where('method', PaymentMethod::CostOffset),
-                    )
-                    ->getOptionLabelFromRecordUsing(fn ($record): string => $record->reseller->name.' - '.$record->paid_at->format('d/m/Y').' - Rp '.number_format((float) $record->amount, 0, ',', '.'))
-                    ->searchable()
-                    ->preload(),
+                    ->placeholder('Tidak (dibayar konveksi)'),
                 TextInput::make('note')
                     ->label('Catatan')
                     ->maxLength(255),

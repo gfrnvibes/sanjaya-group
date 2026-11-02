@@ -11,11 +11,12 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 /**
  * STOK OPNAME per gudang. Saat posted, selisih -> stock_movements(opname).
  */
-#[Fillable(['warehouse_id', 'counted_at', 'status', 'posted_at', 'note', 'created_by'])]
+#[Fillable(['warehouse_id', 'counted_at', 'status', 'posted_at', 'is_opening', 'note', 'created_by'])]
 class StockOpname extends Model
 {
     protected $attributes = [
         'status' => 'draft',
+        'is_opening' => false,
     ];
 
     protected function casts(): array
@@ -23,6 +24,7 @@ class StockOpname extends Model
         return [
             'counted_at' => 'datetime',
             'posted_at' => 'datetime',
+            'is_opening' => 'boolean',
             'status' => StockOpnameStatus::class,
         ];
     }

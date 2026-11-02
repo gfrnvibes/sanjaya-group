@@ -58,6 +58,7 @@ class SettingResource extends Resource
             'return_alert_pct' => 'Batas peringatan % retur (0.10 = 10%)',
             'return_alert_min_qty' => 'Minimal qty retur untuk peringatan (pcs)',
             'report_emails' => 'Email penerima laporan mingguan (pisahkan koma)',
+            'tax_rate' => 'Tarif pajak penghasilan di laporan (0 = tidak dihitung; 0.11 = 11% dari laba kumulatif tahun berjalan)',
         ];
     }
 

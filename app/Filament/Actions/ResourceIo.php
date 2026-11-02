@@ -17,6 +17,7 @@ use Illuminate\Contracts\Support\Htmlable;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Livewire\Component as LivewireComponent;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 /**
@@ -76,12 +77,18 @@ class ResourceIo
             ->authorize(fn (HasTable $livewire): bool => ! method_exists($livewire, 'getResource') || $livewire::getResource()::canViewAny())
             ->label('Tabel ini – Cetak / PDF')
             ->icon(Heroicon::OutlinedPrinter)
-            ->action(function (HasTable $livewire, TableExporter $exporter): void {
-                $token = (string) Str::uuid();
-                Cache::put("print:{$token}", ['user' => auth()->id(), 'html' => $exporter->printHtml($livewire, self::title($livewire))], now()->addMinutes(15));
+            ->action(fn (HasTable $livewire, TableExporter $exporter) => self::openPrint($livewire, $exporter->printHtml($livewire, self::title($livewire))));
+    }
 
-                $livewire->js('window.open('.json_encode(route('filament.administrator.print', ['token' => $token])).", '_blank')");
-            });
+    /**
+     * Simpan HTML cetak sementara (15 menit, hanya user ini) lalu buka di tab baru.
+     */
+    public static function openPrint(LivewireComponent $livewire, string $html): void
+    {
+        $token = (string) Str::uuid();
+        Cache::put("print:{$token}", ['user' => auth()->id(), 'html' => $html], now()->addMinutes(15));
+
+        $livewire->js('window.open('.json_encode(route('filament.administrator.print', ['token' => $token])).", '_blank')");
     }
 
     /**

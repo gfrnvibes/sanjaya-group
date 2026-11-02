@@ -12,6 +12,17 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 #[Fillable(['name', 'bank', 'holder', 'is_active'])]
 class CashAccount extends Model
 {
+    /** Setiap rekening punya akun kas sendiri di bagan akun. */
+    protected static function booted(): void
+    {
+        static::created(fn (CashAccount $cash) => Account::forCashAccount($cash));
+        static::updated(function (CashAccount $cash): void {
+            if ($cash->wasChanged('name')) {
+                Account::query()->where('cash_account_id', $cash->id)->update(['name' => 'Kas - '.$cash->name]);
+            }
+        });
+    }
+
     protected function casts(): array
     {
         return [

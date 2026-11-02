@@ -2,13 +2,17 @@
 
 namespace App\Filament\Pages;
 
+use App\Filament\Actions\ResourceIo;
+use App\Filament\Pages\Reports\FinancialReportPage;
 use App\Models\Channel;
 use App\Models\Reseller;
 use App\Models\Store;
 use App\Services\BalanceSheetService;
+use App\Services\FinancialStatements;
 use BackedEnum;
 use BezhanSalleh\FilamentShield\Traits\HasPageShield;
 use Filament\Actions\Action;
+use Filament\Actions\ActionGroup;
 use Filament\Forms\Components\Select;
 use Filament\Infolists\Components\RepeatableEntry;
 use Filament\Infolists\Components\RepeatableEntry\TableColumn;
@@ -30,6 +34,7 @@ use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use UnitEnum;
 
 /**
@@ -43,9 +48,9 @@ class BalanceSheet extends Page implements HasTable
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedScale;
 
-    protected static string|UnitEnum|null $navigationGroup = 'Keuangan';
+    protected static string|UnitEnum|null $navigationGroup = 'Laporan Keuangan';
 
-    protected static ?int $navigationSort = 0;
+    protected static ?int $navigationSort = 2;
 
     protected static ?string $navigationLabel = 'Neraca Keuangan';
 
@@ -81,6 +86,40 @@ class BalanceSheet extends Page implements HasTable
     {
         $this->sheets = null;
         $this->resetTable();
+    }
+
+    protected function getHeaderActions(): array
+    {
+        $report = fn (): array => [
+            'title' => 'Neraca',
+            'entity' => $this->sheet()['label'],
+            'columns' => ['Per '.$this->asOf()->locale('id')->translatedFormat('d M Y')],
+            'rows' => FinancialReportPage::merge([FinancialStatements::balanceRows($this->sheet())]),
+            'notes' => ['Disusun dari saldo buku besar (jurnal double-entry).'],
+        ];
+
+        return [
+            ActionGroup::make([
+                Action::make('print')
+                    ->label('Cetak / PDF (sumber terpilih)')
+                    ->icon(Heroicon::OutlinedPrinter)
+                    ->action(fn () => ResourceIo::openPrint($this, view('print.financial-report', [
+                        'reports' => [$report()],
+                        'documentTitle' => 'Neraca',
+                        'printedBy' => auth()->user()?->name,
+                    ])->render())),
+                Action::make('excel')
+                    ->label('Excel (.xlsx)')
+                    ->icon(Heroicon::OutlinedTableCells)
+                    ->action(fn (): BinaryFileResponse => response()
+                        ->download(FinancialReportPage::excel([$report()]), 'neraca-'.$this->asOf()->format('Ymd').'.xlsx')
+                        ->deleteFileAfterSend()),
+            ])
+                ->label('Export')
+                ->icon(Heroicon::OutlinedArrowDownTray)
+                ->button()
+                ->color('gray'),
+        ];
     }
 
     public function getSubheading(): ?string
@@ -142,11 +181,11 @@ class BalanceSheet extends Page implements HasTable
                         TextEntry::make('notes')
                             ->hiddenLabel()
                             ->state([
-                                'Kas konveksi = pembayaran reseller (selain potongan biaya) - biaya - upah jahit - pembelian bahan - pembelian barang jadi/borongan - pembayaran supplier. Saldo awal kas belum tercatat, jadi bisa minus.',
-                                'Persediaan barang jadi dinilai dengan HPP yang berlaku; bahan baku dengan rata-rata harga beli; barang dalam proses dengan biaya bahan SPK yang belum selesai.',
-                                'Toko: pembayaran reseller dialokasikan ke tiap toko sebanding tagihan bersihnya. Kas toko = pendapatan - fee admin - iklan - pembayaran ke konveksi.',
-                                'Laba toko memakai laporan laba rugi bulanan, sehingga neraca toko dihitung per akhir bulan.',
-                                'Pos "Modal, Saldo Awal & Laba Ditahan" adalah penyeimbang: berisi modal disetor, saldo awal, dan selisih transaksi yang belum tercatat.',
+                                'Semua angka = saldo akun di buku besar (menu Akuntansi), dari jurnal otomatis tiap transaksi + jurnal manual. Aset selalu = kewajiban + ekuitas.',
+                                'Kas per rekening. Saldo awal kas, aset tetap & pinjaman dicatat lewat Jurnal Umum (manual).',
+                                'Persediaan barang jadi = barang masuk (harga beli / biaya produksi) - HPP terjual. Minus berarti stok awal belum dicatat: lakukan opname awal (centang "Opname awal") agar selisihnya masuk Saldo Awal.',
+                                'Piutang reseller yang bersaldo kredit ditampilkan sebagai Deposit / Titipan Reseller. "Dibayar Reseller - Belum Dirinci" = potongan biaya reseller yang belum dihubungkan ke biaya / pembelian bahan / upah.',
+                                'Toko: pembayaran reseller dibagi ke toko-tokonya sebanding tagihan s.d. tanggal bayar. Kas toko = omzet - fee admin - iklan - pembayaran ke konveksi.',
                             ])
                             ->listWithLineBreaks()
                             ->bulleted()

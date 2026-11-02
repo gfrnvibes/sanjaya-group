@@ -31,6 +31,9 @@ class StockOpnameInfolist
                             ->label('Diposting')
                             ->dateTime()
                             ->placeholder('-'),
+                        TextEntry::make('is_opening')
+                            ->label('Jenis')
+                            ->formatStateUsing(fn (bool $state): string => $state ? 'Opname awal (selisih -> Saldo Awal)' : 'Opname rutin (selisih -> laba rugi)'),
                         TextEntry::make('note')
                             ->label('Catatan')
                             ->placeholder('-')

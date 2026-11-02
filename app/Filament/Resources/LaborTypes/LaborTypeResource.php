@@ -61,7 +61,7 @@ class LaborTypeResource extends Resource
                     ->label('Dibayar sebagai')
                     ->options(WageType::class)
                     ->placeholder('Tidak (dibayar lewat Biaya Operasional)')
-                    ->helperText('Upah Jahit = dibayar ke penjahit, Upah Potong = ke tukang potong, lewat Pembayaran Upah per SPK. Kosong = obras, bordir, dll. dibayar lewat Biaya Operasional. Kode bebas.'),
+                    ->helperText('Upah Jahit = dibayar ke penjahit, Upah Potong = ke tukang potong, lewat Pembayaran Upah per SPK. Kosong = aksesoris, obras, bordir, dll. dibayar lewat Biaya Operasional (belanja aksesoris: kategori Aksesoris). Kode bebas.'),
             ]);
     }
 

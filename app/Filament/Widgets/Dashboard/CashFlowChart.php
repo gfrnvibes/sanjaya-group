@@ -14,7 +14,7 @@ class CashFlowChart extends DashboardChart
 
     protected ?string $heading = 'Arus Kas';
 
-    protected ?string $description = 'Kas masuk (pembayaran reseller) vs kas keluar (biaya, upah, pembelian bahan & barang jadi, bayar supplier).';
+    protected ?string $description = 'Kas masuk (pembayaran reseller, setoran modal) vs kas keluar (biaya, upah, pembelian bahan & barang jadi, bayar supplier, prive).';
 
     public ?string $filter = '6';
 

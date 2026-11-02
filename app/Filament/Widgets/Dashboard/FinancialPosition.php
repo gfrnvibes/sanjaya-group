@@ -32,19 +32,18 @@ class FinancialPosition extends StatsOverviewWidget
     protected function getStats(): array
     {
         $sheet = app(BalanceSheetService::class)->konveksiSheet(today());
-        $line = fn (string $section, string $label): float => (float) (collect($sheet[$section])->firstWhere('label', $label)['amount'] ?? 0);
         $url = BalanceSheet::getUrl();
         $rupiah = fn (float $amount): string => Number::currency($amount, 'IDR', 'id', 0);
 
-        $cash = $line('assets', 'Kas & Bank (arus kas tercatat)');
-        $receivable = $line('assets', 'Piutang Reseller');
-        $inventory = $line('assets', 'Persediaan Barang Jadi') + $line('assets', 'Persediaan Bahan Baku') + $line('assets', 'Barang Dalam Proses (SPK berjalan)');
+        $cash = BalanceSheetService::sumRoles($sheet['assets'], ['cash']);
+        $receivable = BalanceSheetService::sumRoles($sheet['assets'], ['ar_reseller']);
+        $inventory = BalanceSheetService::sumRoles($sheet['assets'], ['inventory_fg', 'inventory_material', 'wip']);
         $liabilities = BalanceSheetService::total($sheet['liabilities']);
         $equity = BalanceSheetService::total($sheet['equity']);
 
         return [
             Stat::make('Kas & Bank', $rupiah($cash))
-                ->description('Arus kas tercatat')
+                ->description('Semua rekening (buku besar)')
                 ->descriptionIcon(Heroicon::OutlinedBanknotes)
                 ->color($cash >= 0 ? 'success' : 'danger')
                 ->url($url),
@@ -59,7 +58,7 @@ class FinancialPosition extends StatsOverviewWidget
                 ->color('info')
                 ->url($url),
             Stat::make('Kewajiban', $rupiah($liabilities))
-                ->description('Utang upah, supplier & titipan')
+                ->description('Utang upah, supplier & deposit')
                 ->descriptionIcon(Heroicon::OutlinedCreditCard)
                 ->color($liabilities > 0 ? 'danger' : 'gray')
                 ->url($url),

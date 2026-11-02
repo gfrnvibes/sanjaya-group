@@ -3,6 +3,7 @@
 namespace App\Providers;
 
 use App\Models\GoodsReceiptItem;
+use App\Models\MaterialOpnameItem;
 use App\Models\MaterialPurchaseItem;
 use App\Models\SalesOrderItem;
 use App\Models\SalesReturn;
@@ -99,6 +100,7 @@ class AppServiceProvider extends ServiceProvider
         // Alias pendek & stabil untuk kolom source_type di ledger stok/bahan.
         Relation::morphMap([
             'goods_receipt_item' => GoodsReceiptItem::class,
+            'material_opname_item' => MaterialOpnameItem::class,
             'material_purchase_item' => MaterialPurchaseItem::class,
             'sales_order_item' => SalesOrderItem::class,
             'sales_return' => SalesReturn::class,

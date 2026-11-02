@@ -3,12 +3,15 @@
 namespace App\Filament\Resources\ExpenseCategories;
 
 use App\Filament\Resources\ExpenseCategories\Pages\ManageExpenseCategories;
+use App\Models\Account;
 use App\Models\ExpenseCategory;
+use App\Support\ChartOfAccounts;
 use BackedEnum;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
+use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
@@ -47,13 +50,21 @@ class ExpenseCategoryResource extends Resource
                     ->label('Nama')
                     ->required()
                     ->maxLength(80),
+                Select::make('account_id')
+                    ->label('Akun Buku Besar')
+                    ->options(fn (): array => Account::query()->where('ledger', ChartOfAccounts::KONVEKSI)
+                        ->whereIn('type', ['cogs', 'expense', 'other_expense', 'asset'])->where('is_active', true)->orderBy('code')->get()
+                        ->mapWithKeys(fn (Account $account): array => [$account->id => $account->label()])->all())
+                    ->searchable()
+                    ->placeholder('Buat akun beban baru otomatis')
+                    ->helperText('Gaji produksi -> Biaya Overhead Produksi (masuk HPP); gaji admin/toko -> Beban Gaji Karyawan. Kosong = dibuatkan akun "Beban <nama>".'),
             ]);
     }
 
     public static function table(Table $table): Table
     {
         return $table
-            ->modifyQueryUsing(fn ($query) => $query->withSum('expenses', 'amount'))
+            ->modifyQueryUsing(fn ($query) => $query->with('account')->withSum('expenses', 'amount'))
             ->columns([
                 TextColumn::make('code')
                     ->label('Kode')
@@ -62,6 +73,10 @@ class ExpenseCategoryResource extends Resource
                 TextColumn::make('name')
                     ->label('Nama')
                     ->searchable(),
+                TextColumn::make('account.code')
+                    ->label('Akun')
+                    ->state(fn (ExpenseCategory $record): ?string => $record->account?->label())
+                    ->placeholder('-'),
                 TextColumn::make('expenses_sum_amount')
                     ->label('Total Biaya')
                     ->money('IDR', decimalPlaces: 0),

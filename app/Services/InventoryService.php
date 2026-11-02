@@ -7,6 +7,8 @@ use App\Enums\StockMovementType;
 use App\Enums\StockOpnameStatus;
 use App\Exceptions\BusinessRuleException;
 use App\Models\GoodsReceipt;
+use App\Models\MaterialBalance;
+use App\Models\MaterialOpname;
 use App\Models\MaterialPurchase;
 use App\Models\StockAdjustment;
 use App\Models\StockBalance;
@@ -187,6 +189,63 @@ class InventoryService
         });
     }
 
+    /**
+     * Isi baris opname bahan draft dengan semua bahan yang punya saldo di gudang opname.
+     */
+    public function fillMaterialOpname(MaterialOpname $opname): int
+    {
+        return DB::transaction(function () use ($opname): int {
+            $opname = MaterialOpname::query()->lockForUpdate()->findOrFail($opname->id);
+            $this->ensureDraft($opname);
+            $balances = MaterialBalance::query()
+                ->where('warehouse_id', $opname->warehouse_id)
+                ->whereNotIn('material_id', $opname->items()->pluck('material_id'))
+                ->get();
+
+            foreach ($balances as $balance) {
+                $qty = $this->ledger->materialQtyAt($balance->material_id, $opname->warehouse_id, $opname->counted_at);
+                $opname->items()->create(['material_id' => $balance->material_id, 'system_qty' => $qty, 'counted_qty' => max($qty, 0)]);
+            }
+
+            return $balances->count();
+        });
+    }
+
+    /**
+     * Posting opname bahan: system_qty dihitung pada counted_at, selisih -> material_movements(opname).
+     */
+    public function postMaterialOpname(MaterialOpname $opname): void
+    {
+        DB::transaction(function () use ($opname): void {
+            $opname = MaterialOpname::query()->lockForUpdate()->findOrFail($opname->id);
+            $this->ensureDraft($opname);
+
+            if ($opname->items()->doesntExist()) {
+                throw new BusinessRuleException('Opname belum punya baris hitung.');
+            }
+
+            if ($opname->counted_at->isFuture()) {
+                throw new BusinessRuleException('Waktu opname tidak boleh di masa depan.');
+            }
+
+            foreach ($opname->items()->orderBy('material_id')->get() as $item) {
+                $this->ledger->lockBalance('material', $item->material_id, $opname->warehouse_id);
+                $this->ledger->ensureNoLaterCount('material', $item->material_id, $opname->warehouse_id, $opname->counted_at);
+                $item->update(['system_qty' => $this->ledger->materialQtyAt($item->material_id, $opname->warehouse_id, $opname->counted_at)]);
+                $item->refresh();
+
+                if (abs((float) $item->diff) >= 0.001) {
+                    $this->ledger->moveMaterial(
+                        $item->material_id, $opname->warehouse_id, $item->diff, MaterialMovementType::Opname,
+                        $item, movedAt: $opname->counted_at,
+                    );
+                }
+            }
+
+            $opname->update(['status' => StockOpnameStatus::Posted, 'posted_at' => now()]);
+        });
+    }
+
     public function openingStock(int $variantId, int $warehouseId, int $qty, int|float|string|null $unitCost, string $movedAt, ?string $note = null): void
     {
         $this->ledger->moveStock($variantId, $warehouseId, $qty, StockMovementType::Opening, null, $unitCost, $note, $movedAt);
@@ -215,7 +274,7 @@ class InventoryService
         }
     }
 
-    private function ensureDraft(StockOpname $opname): void
+    private function ensureDraft(StockOpname|MaterialOpname $opname): void
     {
         if ($opname->status !== StockOpnameStatus::Draft) {
             throw new BusinessRuleException('Opname sudah diposting.');

@@ -5,23 +5,79 @@ namespace App\Observers;
 use App\Enums\InvoiceCycle;
 use App\Enums\StockOpnameStatus;
 use App\Exceptions\BusinessRuleException;
+use App\Models\MaterialOpname;
+use App\Models\MaterialOpnameItem;
 use App\Models\Reseller;
 use App\Models\Setting;
 use App\Models\StockOpname;
 use App\Models\StockOpnameItem;
 use App\Models\Store;
+use App\Models\WorkOrder;
+use App\Services\GeneralLedger;
 use App\Services\SalesDashboardService;
 use App\Support\DocumentNumber;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\DB;
 
 class BusinessRecordObserver
 {
+    /** Tanggal transaksi yang dikunci setelah tutup buku (per model). */
+    private const LEDGER_DATES = [
+        'SalesOrder' => ['order_date'],
+        'SalesReturn' => ['returned_at'],
+        'ResellerPayment' => ['paid_at'],
+        'Expense' => ['expense_date'],
+        'EquityTransaction' => ['transacted_at'],
+        'MaterialPurchase' => ['purchase_date'],
+        'TailorPayment' => ['paid_at'],
+        'GoodsReceipt' => ['received_at'],
+        'SupplierPayment' => ['paid_at'],
+        'StockAdjustment' => ['adjusted_at'],
+        'StockOpname' => ['counted_at'],
+        'MaterialOpname' => ['counted_at'],
+        'WorkOrder' => ['cut_date', 'finished_date'],
+        'StoreAdSpend' => ['spend_date'],
+    ];
+
+    /**
+     * Transaksi di bulan yang sudah ditutup buku tidak boleh ditambah, diubah atau dihapus.
+     * SPK: hanya tanggal yang berubah yang dicek (SPK lama boleh diselesaikan di bulan berjalan).
+     */
+    private function ensureLedgerOpen(Model $model, bool $deleting = false): void
+    {
+        $fields = self::LEDGER_DATES[class_basename($model)] ?? [];
+
+        if ($fields === [] || ! DB::table('ledger_closings')->exists()) {
+            return;
+        }
+
+        $ledger = app(GeneralLedger::class);
+
+        foreach ($fields as $field) {
+            if ($model instanceof WorkOrder && $model->exists && ! $deleting && ! $model->isDirty($field)) {
+                continue;
+            }
+
+            $dates = $deleting || ! $model->exists ? [$model->getAttribute($field)] : [$model->getAttribute($field), $model->getRawOriginal($field)];
+
+            foreach (array_filter($dates) as $date) {
+                $ledger->ensureOpen($date);
+            }
+        }
+    }
+
     private function ensureOpnameEditable(Model $model): void
     {
-        $id = $model instanceof StockOpname ? $model->getKey() : ($model instanceof StockOpnameItem ? $model->opname_id : null);
+        [$class, $id] = match (true) {
+            $model instanceof StockOpname => [StockOpname::class, $model->getKey()],
+            $model instanceof StockOpnameItem => [StockOpname::class, $model->opname_id],
+            $model instanceof MaterialOpname => [MaterialOpname::class, $model->getKey()],
+            $model instanceof MaterialOpnameItem => [MaterialOpname::class, $model->opname_id],
+            default => [null, null],
+        };
         if ($id !== null) {
-            $parent = StockOpname::query()->lockForUpdate()->find($id);
+            $parent = $class::query()->lockForUpdate()->find($id);
             if ($parent?->status === StockOpnameStatus::Posted) {
                 throw new BusinessRuleException('Opname sudah diposting dan tidak boleh diubah/dihapus.');
             }
@@ -31,11 +87,13 @@ class BusinessRecordObserver
     public function deleting(Model $model): void
     {
         $this->ensureOpnameEditable($model);
+        $this->ensureLedgerOpen($model, deleting: true);
     }
 
     public function saving(Model $model): void
     {
         $this->ensureOpnameEditable($model);
+        $this->ensureLedgerOpen($model);
         if ($model instanceof Setting && $model->key === 'report_emails') {
             foreach (preg_split('/[\s,;]+/', (string) $model->value, -1, PREG_SPLIT_NO_EMPTY) as $email) {
                 if (filter_var($email, FILTER_VALIDATE_EMAIL) === false) {

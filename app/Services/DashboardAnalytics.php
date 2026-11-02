@@ -236,26 +236,7 @@ class DashboardAnalytics
      */
     public function cashFlowPerMonth(array $months): array
     {
-        $from = $months[0]->toDateString();
-        $until = end($months)->copy()->endOfMonth()->toDateString();
-
-        $in = collect(DB::select(<<<'SQL'
-            SELECT date_trunc('month', paid_at)::date AS month, SUM(amount) AS amount
-            FROM reseller_payments WHERE method <> 'cost_offset' AND paid_at::date BETWEEN ? AND ? GROUP BY 1
-            SQL, [$from, $until]));
-
-        $out = collect(DB::select(<<<'SQL'
-            SELECT date_trunc('month', day)::date AS month, SUM(amount) AS amount FROM (
-                SELECT expense_date AS day, amount FROM expenses WHERE reseller_payment_id IS NULL
-                UNION ALL SELECT paid_at, amount FROM tailor_payments
-                UNION ALL SELECT p.purchase_date, i.total_price FROM material_purchase_items i JOIN material_purchases p ON p.id = i.purchase_id
-                UNION ALL SELECT r.received_at::date, i.qty * COALESCE(i.unit_cost, 0) FROM goods_receipt_items i JOIN goods_receipts r ON r.id = i.receipt_id
-                          WHERE r.source = 'borongan' OR (r.source = 'beli_jadi' AND r.supplier_id IS NULL)
-                UNION ALL SELECT paid_at, amount FROM supplier_payments
-            ) x WHERE day::date BETWEEN ? AND ? GROUP BY 1
-            SQL, [$from, $until]));
-
-        return ['in' => $this->spread($in, $months), 'out' => $this->spread($out, $months)];
+        return app(CashLedger::class)->monthly($months);
     }
 
     /**

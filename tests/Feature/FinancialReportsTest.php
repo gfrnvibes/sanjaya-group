@@ -55,8 +55,8 @@ it('excludes later transactions and future opening balances from a historical ba
     $sheets = app(BalanceSheetService::class)->build(Carbon::parse('2026-10-10'));
     $store = $sheets['store:'.$f['store']->id];
     expect($store['ytd_profit'])->toBe(500.0);
-    expect(collect($store['assets'])->firstWhere('label', 'Kas Hasil Penjualan (estimasi)')['amount'])->toBe(1500.0);
-    expect(collect($sheets['konveksi']['assets'])->firstWhere('label', 'Piutang Reseller')['amount'])->toBe(1000.0);
+    expect(BalanceSheetService::sumRoles($store['assets'], ['cash']))->toBe(1500.0);
+    expect(BalanceSheetService::sumRoles($sheets['konveksi']['assets'], ['ar_reseller']))->toBe(1000.0);
 });
 
 it('uses the earliest known material price before it was recorded, and refuses materials without any price', function () {

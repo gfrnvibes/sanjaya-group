@@ -61,6 +61,8 @@ class AdministratorPanelProvider extends PanelProvider
             ->navigationGroups([
                 NavigationGroup::make('Penjualan'),
                 NavigationGroup::make('Keuangan'),
+                NavigationGroup::make('Laporan Keuangan'),
+                NavigationGroup::make('Akuntansi'),
                 NavigationGroup::make('Produksi'),
                 NavigationGroup::make('Stok'),
                 NavigationGroup::make('Produk'),

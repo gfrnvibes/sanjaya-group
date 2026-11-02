@@ -9,8 +9,9 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
  * Upah produksi yang dibayar per SPK (arus kas, bukan HPP): upah jahit ke penjahit, upah potong ke tukang potong.
+ * Tanpa penjahit = upah gabungan (mis. mingguan semua penjahit). reseller_payment_id = dibayar reseller (potong piutang).
  */
-#[Fillable(['tailor_id', 'work_order_id', 'wage_type', 'paid_at', 'amount', 'cash_account_id', 'note', 'created_by'])]
+#[Fillable(['tailor_id', 'work_order_id', 'wage_type', 'paid_at', 'amount', 'cash_account_id', 'reseller_payment_id', 'note', 'created_by'])]
 class TailorPayment extends Model
 {
     protected $attributes = [
@@ -58,6 +59,12 @@ class TailorPayment extends Model
     public function cashAccount(): BelongsTo
     {
         return $this->belongsTo(CashAccount::class);
+    }
+
+    /** @return BelongsTo<ResellerPayment, $this> */
+    public function resellerPayment(): BelongsTo
+    {
+        return $this->belongsTo(ResellerPayment::class);
     }
 
     /** @return BelongsTo<User, $this> */

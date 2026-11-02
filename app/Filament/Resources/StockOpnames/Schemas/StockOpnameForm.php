@@ -10,6 +10,7 @@ use Filament\Forms\Components\Repeater\TableColumn;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
+use Filament\Forms\Components\Toggle;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
@@ -35,6 +36,10 @@ class StockOpnameForm
                             ->label('Waktu Hitung')
                             ->default(now())
                             ->required(),
+                        Toggle::make('is_opening')
+                            ->label('Opname awal (stok awal belum pernah dicatat)')
+                            ->helperText('Selisihnya dijurnal ke Saldo Awal, bukan ke laba rugi. Centang hanya untuk opname pertama.')
+                            ->columnSpanFull(),
                         Textarea::make('note')
                             ->label('Catatan')
                             ->columnSpanFull(),

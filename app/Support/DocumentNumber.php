@@ -9,7 +9,7 @@ class DocumentNumber
 {
     public static function next(string $prefix, string $table, string $column, int $width = 4): string
     {
-        if (! in_array("{$table}.{$column}", ['reseller_invoices.invoice_no', 'work_orders.code', 'goods_receipts.receipt_no', 'sales_orders.order_no'], true)) {
+        if (! in_array("{$table}.{$column}", ['reseller_invoices.invoice_no', 'work_orders.code', 'goods_receipts.receipt_no', 'sales_orders.order_no', 'journal_entries.number'], true)) {
             throw new InvalidArgumentException('Unsupported document sequence.');
         }
 

@@ -45,6 +45,27 @@ class ResellerPayment extends Model
         return $this->hasMany(Expense::class);
     }
 
+    /** @return HasMany<MaterialPurchase, $this> */
+    public function offsetPurchases(): HasMany
+    {
+        return $this->hasMany(MaterialPurchase::class);
+    }
+
+    /** @return HasMany<TailorPayment, $this> */
+    public function offsetWages(): HasMany
+    {
+        return $this->hasMany(TailorPayment::class);
+    }
+
+    /**
+     * Potongan biaya yang sudah dirinci ke biaya / pembelian bahan / upah.
+     */
+    public function offsetAllocated(): float
+    {
+        return round((float) $this->offsetExpenses()->sum('amount') + (float) $this->offsetWages()->sum('amount')
+            + (float) MaterialPurchaseItem::query()->whereIn('purchase_id', $this->offsetPurchases()->select('id'))->sum('total_price'), 2);
+    }
+
     /** @return BelongsTo<User, $this> */
     public function creator(): BelongsTo
     {

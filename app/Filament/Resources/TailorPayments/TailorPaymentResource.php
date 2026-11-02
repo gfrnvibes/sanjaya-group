@@ -4,6 +4,7 @@ namespace App\Filament\Resources\TailorPayments;
 
 use App\Enums\WageType;
 use App\Enums\WorkOrderStatus;
+use App\Filament\Forms\Components\ResellerOffsetSelect;
 use App\Filament\Resources\TailorPayments\Pages\ManageTailorPayments;
 use App\Filament\Resources\Tailors\RelationManagers\PaymentsRelationManager;
 use App\Filament\Resources\WorkOrders\RelationManagers\TailorPaymentsRelationManager;
@@ -60,10 +61,10 @@ class TailorPaymentResource extends Resource
                     ->label('Penjahit / tukang potong')
                     ->relationship('tailor', 'name', fn (Builder $query) => $query->where('is_active', true))
                     ->default(fn ($livewire) => $livewire instanceof TailorPaymentsRelationManager ? $livewire->getOwnerRecord()->tailor_id : null)
-                    ->helperText('SPK yang orangnya belum dicatat otomatis dicatat atas nama orang ini (penjahit atau tukang potong, sesuai jenis upah).')
+                    ->helperText('Kosongkan untuk upah gabungan (mis. bayaran mingguan semua penjahit). SPK yang orangnya belum dicatat otomatis dicatat atas nama orang ini.')
                     ->searchable()
                     ->preload()
-                    ->required()
+                    ->placeholder('Gabungan (beberapa penjahit)')
                     ->live()
                     ->hidden(fn ($livewire): bool => $livewire instanceof PaymentsRelationManager),
                 Select::make('work_order_id')
@@ -99,7 +100,12 @@ class TailorPaymentResource extends Resource
                 Select::make('cash_account_id')
                     ->label('Dari Rekening / Kas')
                     ->relationship('cashAccount', 'name')
-                    ->preload(),
+                    ->preload()
+                    ->hidden(fn (Get $get): bool => filled($get('reseller_payment_id'))),
+                ResellerOffsetSelect::make()
+                    ->label('Dibayar reseller (potongan biaya)')
+                    ->placeholder('Tidak (dibayar konveksi)')
+                    ->live(),
                 TextInput::make('note')
                     ->label('Catatan')
                     ->maxLength(255),
@@ -133,7 +139,7 @@ class TailorPaymentResource extends Resource
     public static function table(Table $table): Table
     {
         return $table
-            ->modifyQueryUsing(fn (Builder $query) => $query->with(['tailor', 'workOrder', 'cashAccount']))
+            ->modifyQueryUsing(fn (Builder $query) => $query->with(['tailor', 'workOrder', 'cashAccount', 'resellerPayment.reseller']))
             ->defaultSort('paid_at', 'desc')
             ->columns([
                 TextColumn::make('paid_at')
@@ -142,6 +148,7 @@ class TailorPaymentResource extends Resource
                     ->sortable(),
                 TextColumn::make('tailor.name')
                     ->label('Penjahit / tukang potong')
+                    ->placeholder('Gabungan')
                     ->searchable(),
                 TextColumn::make('wage_type')
                     ->label('Jenis upah')
@@ -155,6 +162,7 @@ class TailorPaymentResource extends Resource
                     ->summarize(Sum::make()->money('IDR', decimalPlaces: 0)->label('Total')),
                 TextColumn::make('cashAccount.name')
                     ->label('Rekening')
+                    ->state(fn (TailorPayment $record): ?string => $record->reseller_payment_id ? 'Dibayar '.$record->resellerPayment?->reseller?->name : $record->cashAccount?->name)
                     ->placeholder('-'),
                 TextColumn::make('note')
                     ->label('Catatan')
