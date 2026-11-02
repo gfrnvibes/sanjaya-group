@@ -31,3 +31,10 @@ Thumbs.db
 
 # File kunci sementara Excel
 ~$*
+
+# Data bisnis & hasil kerja lokal (jangan ikut repo / deploy)
+/file_import/
+/output/
+/tmp/
+/.qodo/
+/storage/app/private/sanjaya-backup/
