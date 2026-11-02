@@ -98,6 +98,11 @@ return [
             'search_path' => 'public',
             'timezone' => env('DB_TIMEZONE', 'Asia/Jakarta'),
             'sslmode' => env('DB_SSLMODE', 'prefer'),
+            // Folder pg_dump untuk backup (spatie/laravel-backup); kosong = cari di PATH. Perlu diisi bila
+            // proses web server tidak punya folder bin PostgreSQL di PATH (mis. tombol Backup sekarang).
+            'dump' => [
+                'dump_binary_path' => env('DB_DUMP_BINARY_PATH', ''),
+            ],
         ],
 
         'sqlsrv' => [
