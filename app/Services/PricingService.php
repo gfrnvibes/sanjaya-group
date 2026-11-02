@@ -275,9 +275,10 @@ class PricingService
         $date = Carbon::parse($date)->toDateString();
         $result = ['synced' => 0, 'skipped' => []];
 
-        // Pembelian sebelum resep berlaku: harga dihitung ulang mulai tanggal resep pertama (memakai harga beli ini).
+        // Pembelian sebelum resep berlaku, atau varian yang belum pernah punya harga (pembelian pertama bahannya):
+        // harga dihitung mulai tanggal resep pertama (memakai harga beli ini). Selain itu mulai tanggal pembelian.
         collect($this->variantsUsingMaterials($materialIds))
-            ->groupBy(fn (ProductVariant $variant): string => $this->costing->bomFor($variant, $date) !== null
+            ->groupBy(fn (ProductVariant $variant): string => $this->costing->bomFor($variant, $date) !== null && $variant->priceHistories()->exists()
                 ? $date
                 : (Bom::query()->where('model_id', $variant->model_id)
                     ->where(fn ($query) => $query->whereNull('size_id')->orWhere('size_id', $variant->size_id))
