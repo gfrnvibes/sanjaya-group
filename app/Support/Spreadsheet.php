@@ -7,6 +7,8 @@ use DateTimeImmutable;
 use DateTimeInterface;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
+use OpenSpout\Common\Entity\Cell;
+use OpenSpout\Common\Entity\Cell\FormulaCell;
 use OpenSpout\Common\Entity\Row;
 use OpenSpout\Common\Entity\Style\CellAlignment;
 use OpenSpout\Common\Entity\Style\Color;
@@ -78,7 +80,8 @@ class Spreadsheet
 
                 foreach ($sheet->getRowIterator() as $row) {
                     $line++;
-                    $values = $row->toArray();
+                    // Sel rumus (mis. SKU =B2&F2&H2) dibaca hasil hitungnya; teks biasa berawalan "=" tetap teks.
+                    $values = array_map(fn (Cell $cell) => $cell instanceof FormulaCell && $cell->getComputedValue() !== null ? $cell->getComputedValue() : $cell->getValue(), $row->getCells());
 
                     if ($columns === null) {
                         foreach ($definitions as $key => $definition) {
@@ -346,6 +349,42 @@ class Spreadsheet
     public static function sheetName(string $name): string
     {
         return mb_substr(trim(preg_replace('/\s+/', ' ', preg_replace('/[\\\\\/?*:\[\]]/', '-', $name))), 0, 31) ?: 'Data';
+    }
+
+    /**
+     * OpenSpout menulis rumus tanpa hasil hitung; tambahkan hasilnya (teks) agar file langsung terbaca benar
+     * walau belum dibuka/dihitung Excel (mis. diimpor ulang langsung, atau LibreOffice tanpa hitung ulang).
+     *
+     * @param  array<string, string>  $values  rumus (mis. "=B2&F2&H2") => hasil
+     */
+    public static function cacheFormulaResults(string $path, array $values): void
+    {
+        if ($values === []) {
+            return;
+        }
+
+        $zip = new \ZipArchive;
+        $zip->open($path);
+
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $name = $zip->getNameIndex($i);
+
+            if (! str_starts_with($name, 'xl/worksheets/sheet')) {
+                continue;
+            }
+
+            $xml = preg_replace_callback('/<c ([^>]*)><f>([^<]*)<\/f><\/c>/', function (array $match) use ($values): string {
+                $formula = '='.htmlspecialchars_decode($match[2], ENT_QUOTES | ENT_XML1);
+
+                return isset($values[$formula])
+                    ? '<c '.$match[1].' t="str"><f>'.$match[2].'</f><v>'.htmlspecialchars($values[$formula], ENT_QUOTES | ENT_XML1).'</v></c>'
+                    : $match[0];
+            }, $zip->getFromIndex($i));
+
+            $zip->addFromString($name, $xml);
+        }
+
+        $zip->close();
     }
 
     public static function tempPath(string $extension): string

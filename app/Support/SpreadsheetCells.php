@@ -11,8 +11,12 @@ use OpenSpout\Common\Entity\Style\Style;
 
 class SpreadsheetCells
 {
-    public static function cell(bool|DateInterval|DateTimeInterface|float|int|string|null $value, ?Style $style = null, bool $csv = false): Cell
+    public static function cell(Cell|bool|DateInterval|DateTimeInterface|float|int|string|null $value, ?Style $style = null, bool $csv = false): Cell
     {
+        if ($value instanceof Cell) {
+            return $value;
+        }
+
         if (is_string($value)) {
             // CSV readers also interpret formulas; keep untrusted text inert in every format.
             if ($csv && preg_match('/^[\s\x00-\x1f]*[=+@\-????]/u', $value)) {

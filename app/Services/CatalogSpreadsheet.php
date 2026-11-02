@@ -16,6 +16,7 @@ use App\Models\Warehouse;
 use App\Support\Spreadsheet;
 use App\Support\SpreadsheetCells;
 use Illuminate\Support\Collection;
+use OpenSpout\Common\Entity\Cell\FormulaCell;
 use OpenSpout\Common\Entity\Row;
 use OpenSpout\Writer\AbstractWriterMultiSheets;
 use OpenSpout\Writer\CSV\Writer as CsvWriter;
@@ -35,6 +36,9 @@ class CatalogSpreadsheet
     private const AUTO_COLUMNS = [
         'products' => ['HPP BAHAN', 'HPP ONGKOS', 'HPP', 'MARGIN BERLAKU %', 'HARGA RESELLER', 'HARGA BERLAKU MULAI'],
     ];
+
+    /** @var array<string, string> rumus SKU => hasil, ditulis ke file setelah export */
+    private array $formulaResults = [];
 
     private const WIDTHS = [
         'materials' => [16, 20, 14, 11, 14, 22, 12, 11, 16, 10, 8, 11, 20, 12, 13, 10, 19],
@@ -75,7 +79,9 @@ class CatalogSpreadsheet
             ['Produk', 'MARGIN MODEL % / MARGIN VARIAN %', '-', 'Mis. 30 atau 30%. Kosong = ikut default (produksi: margin_default; beli jadi: margin_ready_made_pct, default 5%).'],
             ['Produk', 'BIAYA PACKING', '-', 'Khusus beli jadi, Rp per pcs. Kosong = ikut pengaturan packing_cost_default.'],
             ['Produk', 'KODE / NAMA WARNA, UKURAN', '-', 'Warna & ukuran varian.'],
-            ['Produk', 'SKU VARIAN', 'Ya', 'Kunci varian. NAMA VARIAN kosong = "Model Warna Ukuran". Ganti SKU: ubah SKU VARIAN, biarkan ID VARIAN.'],
+            ['Produk', 'SKU VARIAN', '-', 'Kunci varian. Rumus: KODE MODEL + KODE WARNA + UKURAN tanpa pemisah (mis. BC1 + H + S = BC1HS); di file export sudah berisi rumus =B2&F2&H2.'],
+            ['', '', '', 'Kosong = otomatis dari rumus untuk varian baru; varian lama (ID VARIAN terisi) SKU-nya tidak diubah. Ganti SKU: ubah SKU VARIAN, biarkan ID VARIAN.'],
+            ['', '', '', 'Warna baru: isi KODE WARNA (singkatan) + NAMA WARNA; warna yang sudah ada ikut kode di sheet Daftar Warna. NAMA VARIAN kosong = "Model Warna Ukuran".'],
             ['Produk', 'SKU BIG SELLER', '-', 'Boleh lebih dari satu, pisahkan dengan koma. Hanya ditambahkan, tidak dihapus.'],
             ['Produk', 'HPP & HARGA RESELLER', 'Otomatis', 'Tidak diisi. Produksi: HPP = resep x harga beli bahan, harga dasar = HPP x (1 + margin), berlaku mulai tanggal resep/pembelian bahan.'],
             ['', '', '', 'Beli jadi: HPP = harga beli terakhir (Barang Masuk sumber Beli Jadi) + packing, harga dasar = HPP x (1 + margin %, default 5%), berlaku mulai tanggal terima.'],
@@ -124,8 +130,10 @@ class CatalogSpreadsheet
 
         $writer = $format === 'ods' ? new OdsWriter : new XlsxWriter;
         $writer->openToFile($path);
-        $this->writeDataSheets($writer, fn (string $type): Collection => $this->rows($type), withAuto: true, only: $sheet === null ? null : [$sheet]);
+        $this->formulaResults = [];
+        $this->writeDataSheets($writer, fn (string $type): Collection => $this->rows($type, formulas: $format === 'xlsx'), withAuto: true, only: $sheet === null ? null : [$sheet]);
         $writer->close();
+        Spreadsheet::cacheFormulaResults($path, $this->formulaResults);
 
         return $path;
     }
@@ -169,10 +177,11 @@ class CatalogSpreadsheet
 
     /**
      * Baris export dengan urutan kolom = CatalogImporter::SHEETS.
+     * $formulas (xlsx): SKU VARIAN berisi rumus =KODE MODEL&KODE WARNA&UKURAN bila SKU-nya sudah sesuai rumus.
      *
      * @return Collection<int, list<mixed>>
      */
-    private function rows(string $type): Collection
+    private function rows(string $type, bool $formulas = false): Collection
     {
         $yesNo = fn (bool $value): string => $value ? 'Ya' : 'Tidak';
         $percent = fn ($value): ?string => $value === null ? null : rtrim(rtrim(number_format((float) $value * 100, 2, '.', ''), '0'), '.').'%';
@@ -188,16 +197,23 @@ class CatalogSpreadsheet
             'products' => ProductVariant::query()
                 ->with(['model.category', 'color', 'size', 'skuAliases'])
                 ->with(['costs' => fn ($q) => $q->orderByDesc('effective_from'), 'priceHistories' => fn ($q) => $q->orderByDesc('effective_from')])
-                ->orderBy('sku')->get()
-                ->map(function (ProductVariant $v) use ($yesNo, $percent): array {
+                ->orderBy('sku')->get()->values()
+                ->map(function (ProductVariant $v, int $index) use ($yesNo, $percent, $formulas): array {
                     // HPP & harga yang berlaku hari ini (otomatis dari resep + margin).
                     $current = fn ($items) => $items->first(fn ($item): bool => $item->effective_from->lte(today())) ?? $items->last();
                     $cost = $current($v->costs);
                     $price = $current($v->priceHistories);
+                    $line = $index + 2; // baris 1 = header
+                    $sku = $v->sku;
+
+                    if ($formulas && $v->sku === ProductVariant::skuFor($v->model->code, $v->color?->code, $v->size?->code)) {
+                        $sku = new FormulaCell("=B{$line}&F{$line}&H{$line}", null, $v->sku);
+                        $this->formulaResults[$sku->getValue()] = $v->sku;
+                    }
 
                     return [
                         $v->model->category?->name, $v->model->code, $v->model->name, $v->model->kind->value, $percent($v->model->default_margin_pct),
-                        $v->color?->code, $v->color?->name, $v->size?->code, $v->sku, $v->name, $v->min_stock, $percent($v->margin_pct),
+                        $v->color?->code, $v->color?->name, $v->size?->code, $sku, $v->name, $v->min_stock, $percent($v->margin_pct),
                         $yesNo($v->is_active), $v->skuAliases->pluck('alias')->implode(', '),
                         $v->packing_cost === null ? null : (float) $v->packing_cost,
                         $v->id, Spreadsheet::stamp($v->updated_at),

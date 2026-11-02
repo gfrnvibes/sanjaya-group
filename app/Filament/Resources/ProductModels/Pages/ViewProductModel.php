@@ -5,6 +5,7 @@ namespace App\Filament\Resources\ProductModels\Pages;
 use App\Filament\Resources\ProductModels\ProductModelResource;
 use App\Models\Color;
 use App\Models\ProductModel;
+use App\Models\ProductVariant;
 use App\Models\Size;
 use Filament\Actions\Action;
 use Filament\Actions\EditAction;
@@ -48,7 +49,7 @@ class ViewProductModel extends ViewRecord
                             $variant = $record->variants()->withTrashed()->firstOrCreate(
                                 ['color_id' => $color?->id, 'size_id' => $size?->id],
                                 [
-                                    'sku' => $record->code.$color?->code.$size?->code,
+                                    'sku' => ProductVariant::skuFor($record->code, $color?->code, $size?->code),
                                     'name' => trim("{$record->name} {$color?->name} {$size?->code}"),
                                 ],
                             );

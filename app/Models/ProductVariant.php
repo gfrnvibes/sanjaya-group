@@ -3,12 +3,14 @@
 namespace App\Models;
 
 use App\Enums\ProductKind;
+use App\Exceptions\BusinessRuleException;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Str;
 
 /**
  * SKU VARIAN, mis. BC1HS (model + warna + ukuran).
@@ -34,6 +36,19 @@ class ProductVariant extends Model
      */
     protected static function booted(): void
     {
+        // SKU kosong = otomatis dari rumus (kode model + kode warna + ukuran).
+        static::saving(function (ProductVariant $variant): void {
+            if (blank($variant->sku)) {
+                $variant->sku = $variant->expectedSku();
+
+                $taken = self::withTrashed()->whereRaw('lower(sku) = ?', [Str::lower($variant->sku)])->whereKeyNot($variant->getKey())->exists();
+
+                if ($taken || $variant->sku === '') {
+                    throw new BusinessRuleException("SKU otomatis \"{$variant->sku}\" sudah dipakai varian lain atau kosong; isi SKU secara manual.");
+                }
+            }
+        });
+
         static::updated(function (ProductVariant $variant): void {
             if ($variant->wasChanged('packing_cost') && $variant->packingCosts()->exists()) {
                 VariantPackingCost::updateOrCreate(
@@ -42,6 +57,23 @@ class ProductVariant extends Model
                 );
             }
         });
+    }
+
+    /**
+     * Rumus SKU: kode model + kode warna + ukuran, tanpa pemisah (mis. BC1 + H + S = BC1HS).
+     */
+    public static function skuFor(?string $modelCode, ?string $colorCode, ?string $sizeCode): string
+    {
+        return $modelCode.$colorCode.$sizeCode;
+    }
+
+    public function expectedSku(): string
+    {
+        return self::skuFor(
+            ProductModel::withTrashed()->whereKey($this->model_id)->value('code'),
+            $this->color_id ? Color::query()->whereKey($this->color_id)->value('code') : null,
+            $this->size_id ? Size::query()->whereKey($this->size_id)->value('code') : null,
+        );
     }
 
     /**

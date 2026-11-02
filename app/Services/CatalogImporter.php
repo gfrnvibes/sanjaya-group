@@ -360,7 +360,7 @@ class CatalogImporter
 
         $modelCode = $v->text('model_code');
         $sku = $v->text('sku');
-        $v->requireText(['model_code' => 'KODE MODEL', 'sku' => 'SKU VARIAN']);
+        $v->requireText(['model_code' => 'KODE MODEL']);
         $v->maxLength(['model_code' => ['KODE MODEL', 30], 'model_name' => ['NAMA MODEL', 150], 'sku' => ['SKU VARIAN', 40], 'name' => ['NAMA VARIAN', 200]]);
 
         $modelKind = $v->enum('model_kind', ProductKind::class, 'JENIS PRODUK');
@@ -403,10 +403,17 @@ class CatalogImporter
             }
         }
 
+        // SKU kosong: varian baru = rumus kode model + kode warna + ukuran; varian lama (ID VARIAN) = SKU tidak diubah.
+        if ($sku === '' && ! $v->filled('variant_id')) {
+            $sku = ProductVariant::skuFor($model->code, $color?->code, $size?->code);
+        }
+
         $variant = $v->filled('variant_id')
             ? ProductVariant::withTrashed()->find((int) $v->text('variant_id'))
                 ?? throw new BusinessRuleException("ID VARIAN {$v->text('variant_id')} tidak ditemukan; kosongkan ID untuk varian baru")
             : $this->findCi(ProductVariant::withTrashed(), 'sku', $sku);
+
+        $sku = $sku === '' ? $variant->sku : $sku;
 
         if ($variant?->trashed()) {
             throw new BusinessRuleException("SKU {$variant->sku} sudah dihapus.");
