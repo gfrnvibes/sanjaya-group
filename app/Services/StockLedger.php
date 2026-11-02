@@ -117,7 +117,21 @@ class StockLedger
     {
         $model = $kind === 'stock' ? StockMovement::class : MaterialMovement::class;
         $field = $kind === 'stock' ? 'variant_id' : 'material_id';
-        if ($model::query()->where($field, $itemId)->where('warehouse_id', $warehouseId)->where('movement_type', 'opname')->where('moved_at', $inclusive ? '>=' : '>', $at)->exists()) {
+        $prefix = $kind === 'stock' ? 'stock' : 'material';
+        $movements = (new $model)->getTable();
+
+        // Opname awal = titik mulai stok: mutasi bertanggal sama (mis. barang masuk 1 Agustus) terjadi sesudahnya, jadi boleh.
+        $opening = fn ($query) => $query->selectRaw('1')
+            ->from("{$prefix}_opname_items as oi")
+            ->join("{$prefix}_opnames as o", 'o.id', '=', 'oi.opname_id')
+            ->whereColumn('oi.id', "{$movements}.source_id")
+            ->where("{$movements}.source_type", "{$prefix}_opname_item")
+            ->where('o.is_opening', true);
+
+        if ($model::query()->where($field, $itemId)->where('warehouse_id', $warehouseId)->where('movement_type', 'opname')
+            ->where(fn ($query) => $query->where('moved_at', '>', $at)
+                ->when($inclusive, fn ($query) => $query->orWhere(fn ($same) => $same->where('moved_at', $at)->whereNotExists($opening))))
+            ->exists()) {
             throw new BusinessRuleException('Sudah ada opname pada/setelah waktu tersebut. Gunakan waktu koreksi setelah opname terakhir.');
         }
     }

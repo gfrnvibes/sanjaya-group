@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\StockBalances;
 
+use App\Enums\ProductKind;
 use App\Filament\Resources\ProductVariants\ProductVariantResource;
 use App\Filament\Resources\StockBalances\Pages\ManageStockBalances;
 use App\Models\StockBalance;
@@ -50,6 +51,11 @@ class StockBalanceResource extends Resource
                     ->label('Nama')
                     ->searchable()
                     ->wrap(),
+                TextColumn::make('variant.model.kind')
+                    ->label('Sumber')
+                    ->badge()
+                    ->color(fn (?ProductKind $state): string => $state === ProductKind::BeliJadi ? 'info' : 'gray')
+                    ->toggleable(),
                 TextColumn::make('warehouse.name')
                     ->label('Gudang'),
                 TextColumn::make('qty')
@@ -71,6 +77,12 @@ class StockBalanceResource extends Resource
                     ->label('Gudang')
                     ->relationship('warehouse', 'name')
                     ->preload(),
+                SelectFilter::make('kind')
+                    ->label('Sumber')
+                    ->options([ProductKind::Produksi->value => 'Produksi', ProductKind::BeliJadi->value => 'Beli Jadi'])
+                    ->query(fn (Builder $query, array $data): Builder => blank($data['value'])
+                        ? $query
+                        : $query->whereHas('variant.model', fn (Builder $model) => $model->where('kind', $data['value']))),
                 Filter::make('below_min')
                     ->label('Di bawah minimum')
                     ->query(fn (Builder $query): Builder => $query->whereHas('variant', fn (Builder $variant) => $variant->whereColumn('product_variants.min_stock', '>=', 'stock_balances.qty'))),

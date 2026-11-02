@@ -3,7 +3,6 @@
 namespace App\Imports;
 
 use App\Enums\StockAdjustmentReason;
-use App\Exceptions\BusinessRuleException;
 use App\Models\StockAdjustment;
 use App\Services\InventoryService;
 use App\Support\Spreadsheet;
@@ -32,7 +31,7 @@ class StockAdjustmentImport extends RowImporter
             'ALASAN' => ['reason', '-', 'Rusak / Sampel / Custom / Koreksi / Lainnya. Default Koreksi.'],
             'CATATAN' => ['note', '-', 'Baris dengan tanggal, gudang, alasan & catatan sama = 1 dokumen.'],
             'SKU VARIAN' => ['sku', 'Ya', 'SKU varian atau SKU BigSeller.'],
-            'QTY' => ['qty', 'Ya', 'Bilangan bulat; positif = tambah stok, negatif = kurangi stok.'],
+            'QTY' => ['qty', 'Ya', 'Bilangan bulat; positif = tambah stok, negatif = kurangi stok. Kosong / 0 = tidak disesuaikan (baris dilewati).'],
         ];
     }
 
@@ -57,22 +56,32 @@ class StockAdjustmentImport extends RowImporter
         $reason = $first->enum('reason', StockAdjustmentReason::class, 'ALASAN') ?? StockAdjustmentReason::Koreksi;
         $first->throwIfInvalid();
 
-        $items = collect($this->eachLine($rows, function (SpreadsheetRow $row): array {
-            $row->requireText(['sku' => 'SKU VARIAN']);
-            $qty = $row->number('qty', 'QTY', required: true, integer: true);
+        // QTY kosong / 0 = SKU tidak disesuaikan, dilewati (file export berisi semua SKU).
+        $items = collect($this->eachLine($rows, function (SpreadsheetRow $row): ?array {
+            $qty = $row->number('qty', 'QTY', integer: true);
             $row->throwIfInvalid();
 
             if ((int) $qty === 0) {
-                throw new BusinessRuleException('QTY tidak boleh 0');
+                return null;
             }
+
+            $row->requireText(['sku' => 'SKU VARIAN']);
+            $row->throwIfInvalid();
 
             return ['variant_id' => $this->variant($row->text('sku'))->id, 'qty' => (int) $qty];
         }))
+            ->filter()
             ->groupBy('variant_id')
             ->map(fn (Collection $lines): array => ['variant_id' => $lines->first()['variant_id'], 'qty' => $lines->sum('qty')])
             ->filter(fn (array $line): bool => $line['qty'] !== 0)
             ->values()
             ->all();
+
+        if ($items === []) {
+            $this->bump('skipped');
+
+            return;
+        }
 
         $warehouse = $this->warehouse($first->text('warehouse'));
 
