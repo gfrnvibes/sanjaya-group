@@ -62,8 +62,8 @@ it('changes packing and margin of a ready made variant from an effective date wi
     $old = app(SalesOrderService::class)->create(['store_id' => $f['store']->id, 'warehouse_id' => $f['warehouse']->id, 'order_date' => '2026-08-05'], [['variant_id' => $variant->id, 'qty' => 1]])->items()->sole();
     $this->actingAs(priceAdmin());
 
-    // (40.000 + 3.000 default) x 1,05 = 45.150 -> 45.200
-    expect((float) $old->reseller_unit_price)->toBe(45200.0);
+    // (40.000 + 2.000 default) x 1,05 = 44.100
+    expect((float) $old->reseller_unit_price)->toBe(44100.0);
 
     Livewire::test(ListReadyMadeProducts::class)
         ->assertCanSeeTableRecords([$variant])
@@ -74,11 +74,11 @@ it('changes packing and margin of a ready made variant from an effective date wi
     // (40.000 + 1.000) x 1,10 = 45.100 mulai 10/08; pesanan 05/08 tetap harga lama.
     $variant->refresh();
     expect((float) $variant->margin_pct)->toBe(0.1)
-        ->and(app(CostingService::class)->packingCostFor($variant, '2026-08-09'))->toBe(3000.0)
+        ->and(app(CostingService::class)->packingCostFor($variant, '2026-08-09'))->toBe(2000.0)
         ->and(app(CostingService::class)->packingCostFor($variant, '2026-08-10'))->toBe(1000.0)
         ->and($variant->priceHistories()->orderBy('effective_from')->get()->map(fn ($price): array => [$price->effective_from->toDateString(), (float) $price->base_price])->all())
-        ->toBe([['2026-08-01', 45200.0], ['2026-08-10', 45100.0]])
-        ->and((float) $old->fresh()->reseller_unit_price)->toBe(45200.0);
+        ->toBe([['2026-08-01', 44100.0], ['2026-08-10', 45100.0]])
+        ->and((float) $old->fresh()->reseller_unit_price)->toBe(44100.0);
 
     $new = app(SalesOrderService::class)->create(['store_id' => $f['store']->id, 'warehouse_id' => $f['warehouse']->id, 'order_date' => '2026-08-12'], [['variant_id' => $variant->id, 'qty' => 1]])->items()->sole();
     expect((float) $new->reseller_unit_price)->toBe(45100.0);

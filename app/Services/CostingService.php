@@ -216,7 +216,7 @@ class CostingService
 
     /**
      * Biaya packing per pcs pada tanggal: riwayat packing varian (berlaku mulai) > isian varian > pengaturan default
-     * (packing_cost_default Rp3.000 untuk beli jadi, packing_cost_default_production untuk produksi, default 0).
+     * (packing_cost_default Rp2.000 untuk beli jadi, packing_cost_default_production untuk produksi, default 0).
      */
     public function packingCostFor(ProductVariant $variant, CarbonInterface|string|null $date = null): float
     {
@@ -239,7 +239,7 @@ class CostingService
     public function defaultPackingFor(ProductVariant $variant): float
     {
         return (float) ($variant->isReadyMade()
-            ? Setting::valueOf('packing_cost_default', 3000)
+            ? Setting::valueOf('packing_cost_default', 2000)
             : Setting::valueOf('packing_cost_default_production', 0));
     }
 

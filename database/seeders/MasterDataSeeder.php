@@ -67,7 +67,7 @@ class MasterDataSeeder extends Seeder
         foreach ([
             'margin_default' => 0.30,
             'margin_ready_made_pct' => 0.05,
-            'packing_cost_default' => 3000,
+            'packing_cost_default' => 2000,
             'price_rounding' => 500,
             'tier_price_rounding' => 100,
             'price_tolerance_pct' => 0.02,

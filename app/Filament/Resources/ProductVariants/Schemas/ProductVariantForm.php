@@ -34,7 +34,7 @@ class ProductVariantForm
                             ->preload(),
                         TextInput::make('sku')
                             ->label('SKU')
-                            ->required()
+                            ->helperText('Kosong = otomatis kode model + kode warna + ukuran (mis. BC1HS).')
                             ->maxLength(40)
                             ->unique(ignoreRecord: true),
                         TextInput::make('name')
@@ -57,7 +57,7 @@ class ProductVariantForm
                             ->dehydrateStateUsing(fn ($state): ?float => blank($state) ? null : (float) $state / 100),
                         TextInput::make('packing_cost')
                             ->label('Biaya Packing / pcs')
-                            ->helperText('Kosong = ikut pengaturan default (beli jadi Rp3.000, produksi packing_cost_default_production). Berlaku mulai hari ini; untuk tanggal lain pakai Ubah harga di Produk Produksi / Produk Beli Jadi.')
+                            ->helperText('Kosong = ikut pengaturan default (beli jadi Rp2.000, produksi packing_cost_default_production). Berlaku mulai hari ini; untuk tanggal lain pakai Ubah harga di Produk Produksi / Produk Beli Jadi.')
                             ->numeric()
                             ->minValue(0)
                             ->prefix('Rp'),
