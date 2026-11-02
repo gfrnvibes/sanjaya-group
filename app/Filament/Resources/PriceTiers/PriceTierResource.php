@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\PriceTiers;
 
+use App\Filament\Actions\PrintPriceListAction;
 use App\Filament\Resources\PriceTiers\Pages\ManagePriceTiers;
 use App\Filament\Tables\Filters\DateRangeFilter;
 use App\Models\PriceTier;
@@ -121,6 +122,7 @@ class PriceTierResource extends Resource
             ])
             ->deferFilters(false)
             ->recordActions([
+                PrintPriceListAction::make('printTierPrices', forRecord: true),
                 EditAction::make(),
                 DeleteAction::make(),
             ])

@@ -2,6 +2,7 @@
 
 namespace App\Filament\Resources\PriceTiers\Pages;
 
+use App\Filament\Actions\PrintPriceListAction;
 use App\Filament\Actions\ResourceIo;
 use App\Filament\Resources\PriceTiers\PriceTierResource;
 use App\Imports\PriceTierImport;
@@ -19,6 +20,7 @@ class ManagePriceTiers extends ManageRecords
     protected function getHeaderActions(): array
     {
         return [
+            PrintPriceListAction::make(),
             // Sinkron otomatis berjalan saat tier / riwayat tier diubah; tombol ini untuk menyamakan data lama sekaligus.
             Action::make('syncTiers')
                 ->label('Sinkronkan semua')
