@@ -9,6 +9,7 @@ use App\Models\ProductModel;
 use App\Services\ResellerPriceList;
 use Filament\Actions\Action;
 use Filament\Forms\Components\DatePicker;
+use Filament\Forms\Components\Radio;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Support\Icons\Heroicon;
@@ -30,7 +31,7 @@ class PrintPriceListAction
             ->modalHeading(fn (?PriceTier $record): string => $record ? 'Cetak daftar harga '.ResellerPriceList::tierLabel($record) : 'Cetak daftar harga reseller per tier')
             ->modalDescription('Harga = harga dasar berlaku x (1 + % tier), dibulatkan sama seperti harga pesanan. HPP & margin tidak ikut dicetak. Halaman cetak terbuka di tab baru: pilih "Simpan sebagai PDF".')
             ->modalSubmitActionLabel('Cetak / PDF')
-            ->fillForm(fn (): array => ['date' => today()->toDateString()])
+            ->fillForm(fn (): array => ['date' => today()->toDateString(), 'layout' => ResellerPriceList::BY_SIZE])
             ->schema(fn (?PriceTier $record): array => [
                 Select::make('tier_ids')
                     ->label('Tier')
@@ -42,6 +43,15 @@ class PrintPriceListAction
                     ->hidden($record !== null),
                 DatePicker::make('date')
                     ->label('Harga berlaku pada')
+                    ->required(),
+                Radio::make('layout')
+                    ->label('Tampilan')
+                    ->options(ResellerPriceList::LAYOUTS)
+                    ->descriptions([
+                        ResellerPriceList::BY_SIZE => 'Satu baris per model (kode + nama), harga tiap ukuran berjajar ke samping seperti tabel Excel.',
+                        ResellerPriceList::BY_MODEL => 'Satu baris per model, ukuran berharga sama digabung (mis. S–XL).',
+                        ResellerPriceList::BY_SKU => 'Semua SKU satu per satu (warna, ukuran) dikelompokkan per model.',
+                    ])
                     ->required(),
                 Select::make('kind')
                     ->label('Jenis produk')
@@ -75,6 +85,7 @@ class PrintPriceListAction
                         'model_ids' => array_map('intval', $data['model_ids'] ?? []),
                     ],
                     $data['note'] ?? null,
+                    $data['layout'] ?? ResellerPriceList::BY_SIZE,
                 ));
             });
     }
