@@ -70,6 +70,7 @@ class Backups extends BackupRunsPage
                     // Setelah respons terkirim: pengguna tidak menunggu proses dump & upload.
                     app()->terminating(function (): void {
                         try {
+                            self::ensureWindowsSystemRoot();
                             Artisan::call('backup:run');
                         } finally {
                             Cache::forget(self::RUNNING);
@@ -102,6 +103,18 @@ class Backups extends BackupRunsPage
                     return Storage::disk('local')->download($latest);
                 }),
         ];
+    }
+
+    /**
+     * Windows, backup dari tombol (request web): Symfony Process hanya meneruskan variabel lingkungan yang juga ada
+     * di $_SERVER (+ semua $_ENV) ke pg_dump. Di request web $_SERVER berisi data request, jadi SystemRoot hilang dan
+     * pg_dump 17.6+/18 gagal "could not generate restrict key". Lewat terminal / jadwal tidak terpengaruh.
+     */
+    private static function ensureWindowsSystemRoot(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows' && blank($_ENV['SystemRoot'] ?? $_ENV['SYSTEMROOT'] ?? null)) {
+            $_ENV['SystemRoot'] = getenv('SystemRoot') ?: (getenv('windir') ?: 'C:\\Windows');
+        }
     }
 
     /**
