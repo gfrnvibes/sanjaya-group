@@ -21,6 +21,9 @@ Schedule::command('backup:clean')->dailyAt('01:30')->timezone('Asia/Jakarta')->w
 Schedule::command('backup:run')->dailyAt('02:00')->timezone('Asia/Jakarta')->withoutOverlapping(60)->when($backupEnabled);
 Schedule::command('backup:monitor')->dailyAt('03:00')->timezone('Asia/Jakarta')->when($backupEnabled);
 
+// Log aktivitas lebih tua dari ACTIVITYLOG_CLEAN_DAYS (bawaan 365 hari) dihapus agar tabel tidak terus membesar.
+Schedule::command('activitylog:clean')->dailyAt('01:15')->timezone('Asia/Jakarta')->withoutOverlapping();
+
 // Tagihan reseller otomatis: pengaman harian (sinkron utama berjalan setiap ada perubahan penjualan / retur).
 Schedule::command('invoices:sync')->dailyAt('01:00')->timezone('Asia/Jakarta')->withoutOverlapping();
 
